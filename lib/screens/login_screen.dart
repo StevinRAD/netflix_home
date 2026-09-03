@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../services/supabase_service.dart';
 import '../utils/language_notifier.dart';
 import 'main_screen.dart';
@@ -21,11 +22,22 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _rememberMe = true;
   bool _obscurePassword = true;
   bool _isRegistering = false;
+  String _appVersion = 'v...';
 
   @override
   void initState() {
     super.initState();
     _loadLastEmail();
+    _loadAppVersion();
+  }
+
+  Future<void> _loadAppVersion() async {
+    final packageInfo = await PackageInfo.fromPlatform();
+    if (mounted) {
+      setState(() {
+        _appVersion = 'v${packageInfo.version}+${packageInfo.buildNumber}';
+      });
+    }
   }
 
   Future<void> _loadLastEmail() async {
@@ -493,7 +505,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 24),
                     Center(
                       child: Text(
-                        'Netflix Home v3.0 Edition',
+                        'Netflix Home $_appVersion Edition',
                         style: GoogleFonts.inter(fontSize: 12, color: Colors.white38),
                       ),
                     ),

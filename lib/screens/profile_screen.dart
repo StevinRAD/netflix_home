@@ -8,7 +8,6 @@ import 'about_screen.dart';
 import 'dashboard_guide_screen.dart';
 import '../utils/language_notifier.dart';
 import '../services/supabase_service.dart';
-import '../services/update_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:async';
 
@@ -1427,20 +1426,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                           MaterialPageRoute(
                               builder: (context) => const AboutScreen()),
                         );
-                      },
-                      isDark: isDark,
-                    ),
-                    _buildMenuCard(
-                      icon: Icons.system_update_rounded,
-                      iconColor: Colors.blueAccent,
-                      title: LanguageNotifier.isIndonesian.value
-                          ? 'Cek Pembaruan'
-                          : 'Check for Updates',
-                      subtitle: LanguageNotifier.isIndonesian.value
-                          ? 'Periksa apakah ada versi aplikasi terbaru'
-                          : 'Check if a new app version is available',
-                      onTap: () {
-                        UpdateService.checkForUpdate(context, showNoUpdateMessage: true);
                       },
                       isDark: isDark,
                     ),
