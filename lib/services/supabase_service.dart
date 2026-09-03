@@ -185,6 +185,29 @@ class SupabaseService {
       final errorData = jsonDecode(response.body);
       throw Exception(errorData['error_description'] ?? errorData['msg'] ?? 'Register gagal');
     }
+
+    // Attempt to upsert the username into the profiles table
+    try {
+      final responseData = jsonDecode(response.body);
+      final userId = responseData['user']?['id'] ?? responseData['id'];
+      if (userId != null) {
+        await http.post(
+          Uri.parse('$supabaseUrl/rest/v1/profiles'),
+          headers: {
+            'apikey': supabaseAnonKey,
+            'Authorization': 'Bearer $supabaseAnonKey',
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates',
+          },
+          body: jsonEncode({
+            'id': userId,
+            'username': username,
+          }),
+        );
+      }
+    } catch (e) {
+      print('Failed to upsert username to profiles: $e');
+    }
   }
 
   /// Change user password
