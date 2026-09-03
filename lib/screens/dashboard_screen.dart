@@ -174,6 +174,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<void> _loadAccounts() async {
     setState(() => _isLoading = true);
     final accounts = await SupabaseService.fetchCookieAccounts();
+    await _loadExpiryDate();
     if (mounted) {
       setState(() {
         _accounts = accounts;
