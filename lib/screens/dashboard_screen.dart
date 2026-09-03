@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:math' as math;
 import '../models/account_model.dart';
 import '../services/supabase_service.dart';
+import '../services/update_service.dart';
 import '../utils/language_notifier.dart';
 import 'dashboard_guide_screen.dart';
 
@@ -89,6 +90,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     _startTimer();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkFirstTimeGuide();
+      UpdateService.checkForUpdate(context);
     });
   }
 
