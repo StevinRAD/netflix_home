@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/supabase_service.dart';
+import '../utils/user_notifier.dart';
 import 'login_screen.dart';
 import 'onboarding_screen.dart';
 import 'main_screen.dart';
@@ -58,10 +59,18 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       if (!mounted) return;
       
       if (isValid) {
-        final displayName = sessionEmail.split('@').first;
+        await UserNotifier.init();
+        final profile = await SupabaseService.fetchUserProfile();
+        final savedUsername = prefs.getString('session_username');
+        final displayName = (savedUsername != null && savedUsername.isNotEmpty)
+            ? savedUsername
+            : ((profile != null && profile['username'] != null && profile['username'].toString().trim().isNotEmpty)
+                ? profile['username'].toString().trim()
+                : sessionEmail.split('@').first);
         _navigate(MainScreen(username: displayName));
       } else {
         await SupabaseService.logout();
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Sesi telah berakhir atau Anda login di perangkat lain.'),
@@ -78,8 +87,8 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   void _navigate(Widget screen) {
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
-        pageBuilder: (_, __, ___) => screen,
-        transitionsBuilder: (_, animation, __, child) {
+        pageBuilder: (context, animation, secondaryAnimation) => screen,
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(opacity: animation, child: child);
         },
         transitionDuration: const Duration(milliseconds: 600),

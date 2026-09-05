@@ -3,14 +3,23 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'dart:math' as math;
+import 'dart:async';
 import '../models/account_model.dart';
 import '../services/nftoken_service.dart';
 import '../services/supabase_service.dart';
 import '../utils/language_notifier.dart';
+import 'login_help_modal.dart';
+import '../widgets/video_tutorial_modal.dart';
 
 class AccountsScreen extends StatefulWidget {
   final String username;
-  const AccountsScreen({super.key, required this.username});
+  final VoidCallback? onBack;
+  const AccountsScreen({
+    super.key,
+    required this.username,
+    this.onBack,
+  });
 
   @override
   State<AccountsScreen> createState() => _AccountsScreenState();
@@ -18,9 +27,35 @@ class AccountsScreen extends StatefulWidget {
 
 class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStateMixin {
   List<CookieAccount> _accounts = [];
+  int _totalAccountsCount = 0;
   bool _isLoading = true;
+  bool _isLoadingMore = false;
   String _searchQuery = '';
   String _selectedPlan = 'Semua';
+
+  final TextEditingController _searchController = TextEditingController();
+  Timer? _searchDebounce;
+
+  // Per-plan offsets for "Semua" balanced mode (~25% each)
+  int _basicOffset = 0;
+  int _standardOffset = 0;
+  int _premiumOffset = 0;
+  int _mobileOffset = 0;
+  static const int _semuaCountPerPlan = 3;
+
+  // Offset for single-plan mode (5 accounts per batch) or search mode
+  int _currentPlanOffset = 0;
+  static const int _planPageSize = 5;
+
+  Map<String, int> _planTotals = {
+    'Semua': 0,
+    'Premium': 0,
+    'Standard': 0,
+    'Basic': 0,
+    'Mobile': 0,
+  };
+
+  final ScrollController _listScrollController = ScrollController();
 
   // Cached tokens and in-progress checking state
   final Map<String, NFTokenResult> _accountTokens = {};
@@ -61,8 +96,29 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    _listScrollController.dispose();
     _headerAnimController.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged(String query) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
+      final trimmed = query.trim();
+      if (_searchQuery != trimmed) {
+        setState(() {
+          _searchQuery = trimmed;
+          _currentPlanOffset = 0;
+          _basicOffset = 0;
+          _standardOffset = 0;
+          _premiumOffset = 0;
+          _mobileOffset = 0;
+        });
+        _loadAccounts();
+      }
+    });
   }
 
   Future<void> _loadExpiryDate() async {
@@ -75,16 +131,174 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     }
   }
 
-  Future<void> _loadAccounts() async {
-    setState(() => _isLoading = true);
-    final accounts = await SupabaseService.fetchCookieAccounts();
-    await _loadExpiryDate();
-    if (mounted) {
-      setState(() {
-        _accounts = accounts;
-        _isLoading = false;
-      });
+  Future<void> _loadAccounts({bool isSwap = false}) async {
+    if (!isSwap) {
+      setState(() => _isLoading = true);
+    } else {
+      setState(() => _isLoadingMore = true);
     }
+
+    try {
+      final isAll = _selectedPlan == 'Semua' || _selectedPlan == 'All';
+      final hasSearch = _searchQuery.trim().isNotEmpty;
+
+      if (isAll) {
+        if (!hasSearch) {
+          // Normal balanced mode (3 per plan = ~12 accounts)
+          final result = await SupabaseService.fetchBalancedAccounts(
+            basicOffset: _basicOffset,
+            standardOffset: _standardOffset,
+            premiumOffset: _premiumOffset,
+            mobileOffset: _mobileOffset,
+            countPerPlan: _semuaCountPerPlan,
+            searchQuery: null,
+          );
+
+          if (mounted) {
+            setState(() {
+              _accounts = result.accounts;
+              _totalAccountsCount = result.totalCount;
+              _planTotals = {
+                'Semua': result.totalCount,
+                ...result.planTotals,
+              };
+              _isLoading = false;
+              _isLoadingMore = false;
+            });
+          }
+        } else {
+          // Search mode on Semua: query paged accounts matching search + synchronize all chip counts
+          final futures = await Future.wait([
+            SupabaseService.fetchCookieAccountsPaged(
+              limit: 10,
+              offset: _currentPlanOffset,
+              searchQuery: _searchQuery,
+            ),
+            SupabaseService.fetchAllPlanCounts(searchQuery: _searchQuery),
+          ]);
+
+          final pagedResult = futures[0] as PagedAccountsResult;
+          final counts = futures[1] as Map<String, int>;
+
+          if (mounted) {
+            setState(() {
+              _accounts = pagedResult.accounts;
+              _totalAccountsCount = counts['Semua'] ?? pagedResult.totalCount;
+              _planTotals = counts;
+              _isLoading = false;
+              _isLoadingMore = false;
+            });
+          }
+        }
+      } else {
+        // Specific plan: fetch 5 accounts of this plan + synchronize all chip counts with search query
+        final futures = await Future.wait([
+          SupabaseService.fetchAccountsByPlan(
+            _selectedPlan,
+            limit: _planPageSize,
+            offset: _currentPlanOffset,
+            searchQuery: _searchQuery,
+          ),
+          SupabaseService.fetchAllPlanCounts(searchQuery: _searchQuery),
+        ]);
+
+        final planResult = futures[0] as PagedAccountsResult;
+        final counts = futures[1] as Map<String, int>;
+
+        if (mounted) {
+          setState(() {
+            _accounts = planResult.accounts;
+            _totalAccountsCount = counts['Semua'] ?? 0;
+            _planTotals = counts;
+            _isLoading = false;
+            _isLoadingMore = false;
+          });
+        }
+      }
+
+      await _loadExpiryDate();
+
+      if (isSwap && mounted) {
+        if (_listScrollController.hasClients) {
+          _listScrollController.animateTo(
+            0,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              LanguageNotifier.isIndonesian.value
+                  ? 'Berhasil menampilkan pilihan akun lainnya!'
+                  : 'Successfully swapped with other accounts!',
+            ),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isLoadingMore = false;
+        });
+      }
+    }
+  }
+
+  void _swapAccounts() {
+    final isAll = _selectedPlan == 'Semua' || _selectedPlan == 'All';
+    final hasSearch = _searchQuery.trim().isNotEmpty;
+
+    if (isAll && !hasSearch) {
+      final premTotal = math.max(1, _planTotals['Premium'] ?? 1);
+      final stdTotal = math.max(1, _planTotals['Standard'] ?? 1);
+      final bscTotal = math.max(1, _planTotals['Basic'] ?? 1);
+      final mobTotal = math.max(1, _planTotals['Mobile'] ?? 1);
+
+      // Loop back to 0 (very first accounts) when all accounts have been cycled through
+      _premiumOffset = (_premiumOffset + _semuaCountPerPlan >= premTotal)
+          ? 0
+          : (_premiumOffset + _semuaCountPerPlan);
+      _standardOffset = (_standardOffset + _semuaCountPerPlan >= stdTotal)
+          ? 0
+          : (_standardOffset + _semuaCountPerPlan);
+      _basicOffset = (_basicOffset + _semuaCountPerPlan >= bscTotal)
+          ? 0
+          : (_basicOffset + _semuaCountPerPlan);
+      _mobileOffset = (_mobileOffset + _semuaCountPerPlan >= mobTotal)
+          ? 0
+          : (_mobileOffset + _semuaCountPerPlan);
+    } else {
+      final totalForPlan = isAll
+          ? math.max(1, _planTotals['Semua'] ?? 1)
+          : math.max(1, _planTotals[_selectedPlan] ?? 1);
+
+      final pageSize = isAll ? 10 : _planPageSize;
+
+      // Loop back to 0 (very first accounts) when all accounts have been cycled through
+      if (_currentPlanOffset + pageSize >= totalForPlan) {
+        _currentPlanOffset = 0;
+      } else {
+        _currentPlanOffset += pageSize;
+      }
+    }
+    _loadAccounts(isSwap: true);
+  }
+
+  void _onSelectPlan(String plan) {
+    if (_selectedPlan == plan) return;
+    setState(() {
+      _selectedPlan = plan;
+      _currentPlanOffset = 0;
+      _basicOffset = 0;
+      _standardOffset = 0;
+      _premiumOffset = 0;
+      _mobileOffset = 0;
+    });
+    _loadAccounts();
   }
 
   Future<void> _contactAdminWhatsApp({String? customMessage}) async {
@@ -216,37 +430,8 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
         if (result.success) {
           _showAccountLinksModal(acc, result);
         } else {
-          // Delete from Supabase Database
-          await SupabaseService.deleteCookieAccount(acc.id);
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                backgroundColor: Colors.red[800],
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                margin: const EdgeInsets.all(16),
-                content: Row(
-                  children: [
-                    const Icon(Icons.error_outline, color: Colors.white, size: 18),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        LanguageNotifier.isIndonesian.value
-                            ? 'Mohon maaf, akun sudah tidak bisa digunakan. Silakan coba akun lainnya.'
-                            : 'Sorry, this account is no longer available. Please try another account.',
-                        style: GoogleFonts.inter(fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-                duration: const Duration(seconds: 4),
-              ),
-            );
-          }
-
-          // Refresh the list to remove it from UI
-          _loadAccounts();
+          // Unusable account: delete from DB and immediately add 1 replacement account!
+          await _handleAccountErrorAndReplace(acc);
         }
       }
     } catch (e) {
@@ -266,6 +451,160 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
       }
     }
   }
+
+  String _normalizePlanName(String raw) {
+    final p = raw.toLowerCase();
+    if (p.contains('premium')) return 'Premium';
+    if (p.contains('standard')) return 'Standard';
+    if (p.contains('basic')) return 'Basic';
+    if (p.contains('mobile')) return 'Mobile';
+    return 'Premium';
+  }
+
+  Future<void> _handleAccountErrorAndReplace(CookieAccount failedAccount) async {
+    final targetIndex = _accounts.indexWhere((a) => a.id == failedAccount.id);
+    final normalizedPlan = _normalizePlanName(failedAccount.planName);
+
+    // 1. Instantly remove from local list and state so UI updates in 0ms
+    setState(() {
+      _accounts.removeWhere((a) => a.id == failedAccount.id);
+      _accountTokens.remove(failedAccount.id);
+      _checkingAccountIds.remove(failedAccount.id);
+
+      if (_totalAccountsCount > 0) _totalAccountsCount--;
+      if ((_planTotals[normalizedPlan] ?? 0) > 0) {
+        _planTotals[normalizedPlan] = _planTotals[normalizedPlan]! - 1;
+      }
+      if ((_planTotals['Semua'] ?? 0) > 0) {
+        _planTotals['Semua'] = _planTotals['Semua']! - 1;
+      }
+    });
+
+    // 2. Delete from Supabase Database in background
+    SupabaseService.deleteCookieAccount(failedAccount.id).ignore();
+
+    // 3. Fetch 1 fresh replacement account from DB
+    try {
+      final isAll = _selectedPlan == 'Semua' || _selectedPlan == 'All';
+
+      int offset = 0;
+      if (isAll) {
+        if (normalizedPlan == 'Premium') {
+          _premiumOffset++;
+          offset = _premiumOffset + _semuaCountPerPlan;
+        } else if (normalizedPlan == 'Standard') {
+          _standardOffset++;
+          offset = _standardOffset + _semuaCountPerPlan;
+        } else if (normalizedPlan == 'Basic') {
+          _basicOffset++;
+          offset = _basicOffset + _semuaCountPerPlan;
+        } else {
+          _mobileOffset++;
+          offset = _mobileOffset + _semuaCountPerPlan;
+        }
+      } else {
+        _currentPlanOffset++;
+        offset = _currentPlanOffset + _accounts.length;
+      }
+
+      final totalForPlan = _planTotals[normalizedPlan] ?? 50;
+      offset = offset % math.max(1, totalForPlan);
+
+      // Fetch up to 3 candidates to avoid picking any account already on screen
+      final result = await SupabaseService.fetchAccountsByPlan(
+        normalizedPlan,
+        limit: 3,
+        offset: offset,
+        searchQuery: _searchQuery,
+      );
+
+      CookieAccount? replacement;
+      final existingIds = _accounts.map((a) => a.id).toSet();
+      existingIds.add(failedAccount.id);
+
+      for (final candidate in result.accounts) {
+        if (!existingIds.contains(candidate.id)) {
+          replacement = candidate;
+          break;
+        }
+      }
+
+      // Fallback: If not found for specific plan, fetch from all accounts
+      if (replacement == null && isAll) {
+        final fallbackResult = await SupabaseService.fetchCookieAccountsPaged(
+          limit: 3,
+          offset: offset,
+          searchQuery: _searchQuery,
+        );
+        for (final candidate in fallbackResult.accounts) {
+          if (!existingIds.contains(candidate.id)) {
+            replacement = candidate;
+            break;
+          }
+        }
+      }
+
+      if (replacement != null && mounted) {
+        setState(() {
+          if (targetIndex >= 0 && targetIndex <= _accounts.length) {
+            _accounts.insert(targetIndex, replacement!);
+          } else {
+            _accounts.add(replacement!);
+          }
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFF1E293B),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(16),
+            content: Row(
+              children: [
+                const Icon(Icons.auto_mode_rounded, color: Color(0xFF46D369), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    LanguageNotifier.isIndonesian.value
+                        ? 'Akun otomatis diperbarui! Kami telah menyiapkan 1 akun ${replacement.planName} baru yang segar untuk Anda. Silakan gunakan akun ini ✓'
+                        : 'Account automatically refreshed! We prepared a fresh 1 ${replacement.planName} account for you ✓',
+                    style: GoogleFonts.inter(fontSize: 12, color: Colors.white, height: 1.3),
+                  ),
+                ),
+              ],
+            ),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFF1E293B),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            margin: const EdgeInsets.all(16),
+            content: Row(
+              children: [
+                const Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    LanguageNotifier.isIndonesian.value
+                        ? 'Akun telah otomatis diperbarui! Silakan pilih akun lain di daftar.'
+                        : 'Account automatically refreshed! Please choose another account from the list.',
+                    style: GoogleFonts.inter(fontSize: 12, color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (_) {}
+  }
+
+
 
   // ignore: unused_field - reserved for future native Netflix launcher integration
   static const _platformLauncher = MethodChannel('com.example.netflix_tools/netflix_launcher');
@@ -554,32 +893,60 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
 
                 const SizedBox(height: 12),
 
-                // Tips box
+                // Aturan Menonton Box
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: Container(
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         colors: [
-                          Colors.amber.withValues(alpha: 0.1),
+                          Colors.amber.withValues(alpha: 0.12),
                           Colors.orange.withValues(alpha: 0.05),
                         ],
                       ),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.amber.withValues(alpha: 0.35)),
                     ),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Icon(Icons.lightbulb_outline, color: Colors.amber, size: 18),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            LanguageNotifier.isIndonesian.value
-                                ? 'Aturan Menonton: Gunakan profile yang sudah ada, jangan buat profile baru.'
-                                : 'Watching Rule: Use existing profiles, do not create new ones.',
-                            style: GoogleFonts.inter(fontSize: 11, color: Colors.amber[800], fontWeight: FontWeight.w500, height: 1.4),
-                          ),
+                        Row(
+                          children: [
+                            const Icon(Icons.rule_folder_outlined, color: Colors.amber, size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              LanguageNotifier.isIndonesian.value
+                                  ? 'Aturan Menonton Netflix Home:'
+                                  : 'Netflix Home Watching Rules:',
+                              style: GoogleFonts.inter(
+                                fontSize: 11.5,
+                                color: Colors.amber[900],
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        _buildRuleBullet(
+                          Icons.person_add_alt_1_outlined,
+                          LanguageNotifier.isIndonesian.value
+                              ? 'Boleh tambah profil baru jika ada slot kosong, asalkan TIDAK MENGHAPUS profil yang sudah ada.'
+                              : 'You may add a new profile if an empty slot exists, but DO NOT DELETE existing profiles.',
+                        ),
+                        const SizedBox(height: 6),
+                        _buildRuleBullet(
+                          Icons.translate_rounded,
+                          LanguageNotifier.isIndonesian.value
+                              ? 'Bebas ubah bahasa tampilan ke Bahasa Indonesia jika akun berbahasa asing.'
+                              : 'Feel free to change profile language back to Bahasa Indonesia.',
+                        ),
+                        const SizedBox(height: 6),
+                        _buildRuleBullet(
+                          Icons.tv_off_outlined,
+                          LanguageNotifier.isIndonesian.value
+                              ? 'Jika terkena limit layar, cukup keluar (logout) & ambil akun baru di Netflix Home (stok akun melimpah).'
+                              : 'If screen limit is reached, simply logout and pick another account in Netflix Home.',
                         ),
                       ],
                     ),
@@ -752,7 +1119,38 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                           ],
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 12),
+
+                      // Aturan Menonton Penting Banner
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF202038) : const Color(0xFFFFF8E1),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.amber.withValues(alpha: 0.35)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.info_outline_rounded, color: Colors.amber, size: 16),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                LanguageNotifier.isIndonesian.value
+                                    ? 'Aturan Menonton:\n• Boleh tambah profil jika kosong (jangan hapus profil lain)\n• Bebas ubah bahasa Netflix ke Bahasa Indonesia\n• Jika layar penuh, keluar & ambil akun baru di Netflix Home'
+                                    : 'Watching Rules:\n• May add profile if empty (do not delete other profiles)\n• Free to change Netflix language to Indonesian\n• If screen full, logout & pick another account in Netflix Home',
+                                style: GoogleFonts.inter(
+                                  fontSize: 10.5,
+                                  color: isDark ? Colors.amber[200] : Colors.amber[900],
+                                  height: 1.4,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 14),
 
                       // 1. Direct Netflix Mobile App Auto-Login (Featured)
                       Container(
@@ -899,7 +1297,112 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                         },
                       ),
 
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 14),
+
+                      // ─── UNIFIED VIDEO TUTORIAL SHORTS CARD ───
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1F1F32) : const Color(0xFFFFF5F5),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: const Color(0xFFE50914).withValues(alpha: 0.3),
+                            width: 1,
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.smart_display_rounded, size: 18, color: Color(0xFFE50914)),
+                                const SizedBox(width: 8),
+                                Text(
+                                  LanguageNotifier.isIndonesian.value
+                                      ? 'Video Tutorial Shorts'
+                                      : 'Shorts Video Tutorials',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                    color: isDark ? Colors.white : Colors.black87,
+                                  ),
+                                ),
+                                const Spacer(),
+                                TextButton(
+                                  onPressed: () {
+                                    Navigator.pop(ctx);
+                                    LoginHelpModal.show(context);
+                                  },
+                                  style: TextButton.styleFrom(
+                                    padding: EdgeInsets.zero,
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  child: Text(
+                                    LanguageNotifier.isIndonesian.value ? 'Panduan FAQ' : 'FAQ Guide',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: const Color(0xFFE50914),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                _buildTutorialChip(
+                                  icon: Icons.smartphone_rounded,
+                                  label: 'Shorts HP',
+                                  color: const Color(0xFF4CAF50),
+                                  onTap: () {
+                                    VideoTutorialModal.show(
+                                      context,
+                                      videoUrl: 'https://youtube.com/shorts/NUKerEzq7pA',
+                                      title: LanguageNotifier.isIndonesian.value
+                                          ? 'Tutorial Login HP'
+                                          : 'Phone Login Tutorial',
+                                    );
+                                  },
+                                ),
+                                const SizedBox(width: 6),
+                                _buildTutorialChip(
+                                  icon: Icons.laptop_mac_rounded,
+                                  label: 'Shorts PC',
+                                  color: const Color(0xFF2196F3),
+                                  onTap: () {
+                                    VideoTutorialModal.show(
+                                      context,
+                                      videoUrl: 'https://youtube.com/shorts/LeNsXxqqrps',
+                                      title: LanguageNotifier.isIndonesian.value
+                                          ? 'Tutorial Login PC'
+                                          : 'PC Login Tutorial',
+                                    );
+                                  },
+                                ),
+                                const SizedBox(width: 6),
+                                _buildTutorialChip(
+                                  icon: Icons.tv_rounded,
+                                  label: 'Shorts TV',
+                                  color: const Color(0xFFFF9800),
+                                  onTap: () {
+                                    VideoTutorialModal.show(
+                                      context,
+                                      videoUrl: 'https://youtube.com/shorts/xq4TDRb0hR0',
+                                      title: LanguageNotifier.isIndonesian.value
+                                          ? 'Tutorial Login TV'
+                                          : 'TV Login Tutorial',
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 6),
                       SizedBox(
                         width: double.infinity,
                         child: TextButton(
@@ -918,6 +1421,27 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildRuleBullet(IconData icon, String text) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 14, color: Colors.amber[800]),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            text,
+            style: GoogleFonts.inter(
+              fontSize: 10.5,
+              color: Colors.amber[900],
+              height: 1.35,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1013,6 +1537,51 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     );
   }
 
+  Widget _buildTutorialChip({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Expanded(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: isDark ? 0.18 : 0.1),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: color.withValues(alpha: 0.35), width: 1),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, size: 14, color: color),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    label,
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Color _getPlanColor(String planName) {
     final p = planName.toLowerCase();
     if (p.contains('premium')) return const Color(0xFFFFB800);
@@ -1031,28 +1600,13 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     return Icons.movie;
   }
 
-  List<CookieAccount> get _filteredAccounts {
-    return _accounts.where((acc) {
-      final matchesSearch = _searchQuery.isEmpty ||
-          acc.email.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-          acc.filename.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-          acc.country.toLowerCase().contains(_searchQuery.toLowerCase());
+  List<CookieAccount> get _filteredAccounts => _accounts;
 
-      final matchesPlan = _selectedPlan == 'Semua' ||
-          _selectedPlan == 'All' ||
-          acc.planName.toLowerCase().contains(_selectedPlan.toLowerCase());
-
-      return matchesSearch && matchesPlan;
-    }).toList();
-  }
-
-  Map<String, int> get _planCounts {
-    final counts = <String, int>{};
-    for (var acc in _accounts) {
-      final plan = acc.planName;
-      counts[plan] = (counts[plan] ?? 0) + 1;
+  int _getCountForPlan(String plan) {
+    if (plan == 'Semua' || plan == 'All') {
+      return _planTotals['Semua'] ?? _totalAccountsCount;
     }
-    return counts;
+    return _planTotals[plan] ?? 0;
   }
 
   @override
@@ -1087,7 +1641,13 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                     color: isDark ? Colors.white : Colors.black87,
                   ),
                 ),
-                onPressed: () => Navigator.pop(context),
+                onPressed: () {
+                  if (Navigator.canPop(context)) {
+                    Navigator.pop(context);
+                  } else if (widget.onBack != null) {
+                    widget.onBack!();
+                  }
+                },
               ),
               flexibleSpace: FlexibleSpaceBar(
                 background: FadeTransition(
@@ -1161,7 +1721,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                                 _buildStatChip(
                                   icon: Icons.library_books,
                                   label: LanguageNotifier.isIndonesian.value ? 'Total' : 'Total',
-                                  value: '${_accounts.length}',
+                                  value: _totalAccountsCount > 0 ? '$_totalAccountsCount' : '${_accounts.length}',
                                   color: Colors.blue,
                                   isDark: isDark,
                                 ),
@@ -1169,7 +1729,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                                 _buildStatChip(
                                   icon: Icons.check_circle,
                                   label: 'Live',
-                                  value: '${_accounts.where((a) => a.status == 'LIVE').length}',
+                                  value: _totalAccountsCount > 0 ? '$_totalAccountsCount' : '${_accounts.where((a) => a.status == 'LIVE').length}',
                                   color: const Color(0xFF46D369),
                                   isDark: isDark,
                                 ),
@@ -1224,7 +1784,8 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                         ],
                       ),
                       child: TextField(
-                        onChanged: (val) => setState(() => _searchQuery = val),
+                        controller: _searchController,
+                        onChanged: _onSearchChanged,
                         style: GoogleFonts.inter(fontSize: 14),
                         decoration: InputDecoration(
                           hintText: LanguageNotifier.isIndonesian.value
@@ -1232,6 +1793,15 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                               : 'Search accounts (email, name, country)...',
                           hintStyle: GoogleFonts.inter(fontSize: 13, color: Colors.grey[400]),
                           prefixIcon: Icon(Icons.search_rounded, size: 20, color: Colors.grey[400]),
+                          suffixIcon: _searchQuery.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.close_rounded, size: 18),
+                                  onPressed: () {
+                                    _searchController.clear();
+                                    _onSearchChanged('');
+                                  },
+                                )
+                              : null,
                           isDense: true,
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(14),
@@ -1260,7 +1830,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                         final isSelected = _selectedPlan == plan;
                         final isAll = plan == 'Semua' || plan == 'All';
                         final planColor = isAll ? const Color(0xFFE50914) : _getPlanColor(plan);
-                        final count = isAll ? _accounts.length : (_planCounts[plan] ?? 0);
+                        final count = _getCountForPlan(plan);
 
                         return Padding(
                           padding: const EdgeInsets.only(right: 8),
@@ -1270,7 +1840,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                               color: Colors.transparent,
                               child: InkWell(
                                 borderRadius: BorderRadius.circular(10),
-                                onTap: () => setState(() => _selectedPlan = plan),
+                                onTap: () => _onSelectPlan(plan),
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                                   decoration: BoxDecoration(
@@ -1351,13 +1921,17 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                       : RefreshIndicator(
                           color: const Color(0xFFE50914),
                           backgroundColor: isDark ? const Color(0xFF1A1A30) : Colors.white,
-                          onRefresh: _loadAccounts,
+                          onRefresh: () => _loadAccounts(),
                           child: ListView.builder(
+                            controller: _listScrollController,
                             padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-                            itemCount: _filteredAccounts.length,
+                            itemCount: _filteredAccounts.length + 1,
                             itemBuilder: (context, index) {
-                              final acc = _filteredAccounts[index];
-                              return _buildAccountCard(acc, index, isDark);
+                              if (index < _filteredAccounts.length) {
+                                final acc = _filteredAccounts[index];
+                                return _buildAccountCard(acc, index, isDark);
+                              }
+                              return _buildLoadMoreFooter(isDark);
                             },
                           ),
                         ),
@@ -1368,37 +1942,142 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     );
   }
 
+  Widget _buildLoadMoreFooter(bool isDark) {
+    final isAll = _selectedPlan == 'Semua' || _selectedPlan == 'All';
+    final totalCount = isAll
+        ? (_totalAccountsCount > 0 ? _totalAccountsCount : 1093)
+        : (_planTotals[_selectedPlan] ?? 0);
+
+    return Container(
+      margin: const EdgeInsets.only(top: 10, bottom: 20),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF16162A) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE50914).withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  isAll
+                      ? (LanguageNotifier.isIndonesian.value
+                          ? 'Menampilkan ${_filteredAccounts.length} Pilihan Akun'
+                          : 'Showing ${_filteredAccounts.length} Accounts')
+                      : (LanguageNotifier.isIndonesian.value
+                          ? 'Menampilkan ${_filteredAccounts.length} dari $totalCount Akun $_selectedPlan'
+                          : 'Showing ${_filteredAccounts.length} of $totalCount $_selectedPlan Accounts'),
+                  style: GoogleFonts.inter(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFFE50914),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Main Button: Tukar dengan Akun Baru
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _isLoadingMore ? null : _swapAccounts,
+              icon: _isLoadingMore
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.swap_horiz_rounded, size: 20),
+              label: Text(
+                _isLoadingMore
+                    ? (LanguageNotifier.isIndonesian.value ? 'Sedang Menyiapkan Akun Lain...' : 'Loading Other Accounts...')
+                    : (LanguageNotifier.isIndonesian.value ? 'Tukar Pilihan Akun Lain' : 'Show Other Accounts'),
+                style: GoogleFonts.inter(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFE50914),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 13),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 1,
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            LanguageNotifier.isIndonesian.value
+                ? '💡 Tekan tombol di atas jika ingin melihat pilihan akun Netflix lainnya.'
+                : '💡 Tap the button above to explore other Netflix accounts.',
+            style: GoogleFonts.inter(
+              fontSize: 10.5,
+              color: Colors.grey[500],
+              height: 1.35,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildLockedState(bool isDark) {
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 40.0),
+      child: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 32.0, vertical: 24.0),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
                 color: isDark ? Colors.redAccent.withValues(alpha: 0.1) : Colors.red.shade50,
                 shape: BoxShape.circle,
               ),
               child: Icon(
                 Icons.lock_outline_rounded,
-                size: 80,
+                size: 64,
                 color: isDark ? Colors.redAccent : Colors.red,
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
             Text(
               LanguageNotifier.isIndonesian.value
                   ? 'Akses Terkunci'
                   : 'Access Locked',
               style: GoogleFonts.inter(
-                fontSize: 22,
+                fontSize: 20,
                 fontWeight: FontWeight.bold,
                 color: isDark ? Colors.white : Colors.black87,
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Text(
               LanguageNotifier.isIndonesian.value
                   ? 'Status akun Anda saat ini adalah Free atau masa aktif telah habis. Anda tidak dapat mengakses daftar akun.\n\nSilakan beli atau perpanjang paket untuk menikmati layanan ini.'
@@ -1410,7 +2089,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                 height: 1.5,
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
             ElevatedButton.icon(
               onPressed: _contactAdminWhatsApp,
               icon: const Icon(Icons.chat_rounded, size: 16),
@@ -1707,31 +2386,33 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
 
   Widget _buildEmptyState(bool isDark) {
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
+      child: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.all(18),
               decoration: BoxDecoration(
                 color: isDark ? const Color(0xFF1A1A30) : Colors.grey[100],
                 shape: BoxShape.circle,
               ),
               child: Icon(
                 _searchQuery.isNotEmpty ? Icons.search_off_rounded : Icons.movie_filter_outlined,
-                size: 48,
+                size: 42,
                 color: Colors.grey[400],
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 14),
             Text(
               _searchQuery.isNotEmpty
                   ? (LanguageNotifier.isIndonesian.value ? 'Tidak Ditemukan' : 'Not Found')
                   : (LanguageNotifier.isIndonesian.value ? 'Belum Ada Akun' : 'No Accounts Yet'),
-              style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.grey[600]),
+              style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey[600]),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Text(
               _searchQuery.isNotEmpty
                   ? (LanguageNotifier.isIndonesian.value
@@ -1740,22 +2421,41 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                   : (LanguageNotifier.isIndonesian.value
                       ? 'Akun Netflix belum tersedia saat ini. Silakan coba lagi nanti.'
                       : 'Netflix accounts are not available yet. Please try again later.'),
-              style: GoogleFonts.inter(fontSize: 13, color: Colors.grey[500], height: 1.5),
+              style: GoogleFonts.inter(fontSize: 12, color: Colors.grey[500], height: 1.4),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 24),
-            if (_searchQuery.isEmpty)
+            const SizedBox(height: 18),
+            if (_searchQuery.isNotEmpty)
               ElevatedButton.icon(
-                onPressed: _loadAccounts,
-                icon: const Icon(Icons.refresh, size: 18),
+                onPressed: () {
+                  _searchController.clear();
+                  _onSearchChanged('');
+                },
+                icon: const Icon(Icons.clear, size: 16),
                 label: Text(
-                  LanguageNotifier.isIndonesian.value ? 'Muat Ulang' : 'Reload',
-                  style: GoogleFonts.inter(fontWeight: FontWeight.w600),
+                  LanguageNotifier.isIndonesian.value ? 'Hapus Pencarian' : 'Clear Search',
+                  style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 13),
                 ),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFE50914),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  elevation: 0,
+                ),
+              )
+            else
+              ElevatedButton.icon(
+                onPressed: _loadAccounts,
+                icon: const Icon(Icons.refresh, size: 16),
+                label: Text(
+                  LanguageNotifier.isIndonesian.value ? 'Muat Ulang' : 'Reload',
+                  style: GoogleFonts.inter(fontWeight: FontWeight.w600, fontSize: 13),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFE50914),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   elevation: 0,
                 ),

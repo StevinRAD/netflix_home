@@ -25,7 +25,15 @@ class _MainScreenState extends State<MainScreen> {
       valueListenable: LanguageNotifier.isIndonesian,
       builder: (context, isIndo, _) {
         return ShowCaseWidget(
-          builder: (context) => Scaffold(
+          builder: (context) => PopScope(
+            canPop: _currentIndex == 0,
+            onPopInvokedWithResult: (didPop, result) {
+              if (didPop) return;
+              if (_currentIndex != 0) {
+                setState(() => _currentIndex = 0);
+              }
+            },
+            child: Scaffold(
               body: [
                 DashboardScreen(
                   username: widget.username,
@@ -33,7 +41,12 @@ class _MainScreenState extends State<MainScreen> {
                     setState(() => _currentIndex = 1);
                   },
                 ),
-                AccountsScreen(username: widget.username),
+                AccountsScreen(
+                  username: widget.username,
+                  onBack: () {
+                    setState(() => _currentIndex = 0);
+                  },
+                ),
                 ProfileScreen(username: widget.username),
               ][_currentIndex],
               bottomNavigationBar: Container(
@@ -79,6 +92,7 @@ class _MainScreenState extends State<MainScreen> {
                 ),
               ),
             ),
+          ),
         );
       },
     );

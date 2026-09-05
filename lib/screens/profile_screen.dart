@@ -11,6 +11,11 @@ import '../services/supabase_service.dart';
 import '../services/update_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:async';
+import 'dart:convert';
+import 'package:image_picker/image_picker.dart';
+import '../utils/user_notifier.dart';
+import '../widgets/user_avatar.dart';
+import 'help_center_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String username;
@@ -27,6 +32,9 @@ class _ProfileScreenState extends State<ProfileScreen>
   // ignore: unused_field
   bool _isLoadingExpiry = true;
   Timer? _countdownTimer;
+  final ValueNotifier<DateTime> _countdownTicker =
+      ValueNotifier<DateTime>(DateTime.now());
+  bool _lastExpiredState = false;
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
 
@@ -42,6 +50,7 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
     _loadAppVersion();
     _loadExpiryDate();
+    SupabaseService.fetchUserProfile();
     _startTimer();
   }
 
@@ -55,9 +64,15 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 
   void _startTimer() {
+    _lastExpiredState = _isAccessExpired;
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
-        setState(() {}); // Update the countdown every second
+        _countdownTicker.value = DateTime.now();
+        final currentExpired = _isAccessExpired;
+        if (currentExpired != _lastExpiredState) {
+          _lastExpiredState = currentExpired;
+          setState(() {});
+        }
       }
     });
   }
@@ -65,6 +80,7 @@ class _ProfileScreenState extends State<ProfileScreen>
   @override
   void dispose() {
     _countdownTimer?.cancel();
+    _countdownTicker.dispose();
     _fadeController.dispose();
     super.dispose();
   }
@@ -151,6 +167,269 @@ class _ProfileScreenState extends State<ProfileScreen>
       }
     } catch (_) {
       await launchUrl(waUrl, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  void _navigateToHelpCenter() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => HelpCenterScreen(username: widget.username),
+      ),
+    );
+  }
+
+  Future<void> _pickAndUploadAvatar() async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isIndo = LanguageNotifier.isIndonesian.value;
+    final hasAvatar = UserNotifier.avatarUrl.value != null &&
+        UserNotifier.avatarUrl.value!.isNotEmpty;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                isIndo ? 'Ubah Foto Profil' : 'Change Profile Photo',
+                style: GoogleFonts.inter(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE50914).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.photo_library_rounded,
+                      color: Color(0xFFE50914)),
+                ),
+                title: Text(
+                    isIndo ? 'Pilih dari Galeri' : 'Choose from Gallery',
+                    style: GoogleFonts.inter(fontSize: 14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickImage(ImageSource.gallery);
+                },
+              ),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.blueAccent.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.camera_alt_rounded,
+                      color: Colors.blueAccent),
+                ),
+                title: Text(isIndo ? 'Ambil dari Kamera' : 'Take from Camera',
+                    style: GoogleFonts.inter(fontSize: 14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickImage(ImageSource.camera);
+                },
+              ),
+              if (hasAvatar)
+                ListTile(
+                  leading: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.delete_outline_rounded,
+                        color: Colors.redAccent),
+                  ),
+                  title: Text(
+                    isIndo ? 'Hapus Foto Profil' : 'Remove Profile Photo',
+                    style: GoogleFonts.inter(
+                        fontSize: 14, color: Colors.redAccent),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _removeAvatar();
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _removeAvatar() async {
+    final isIndo = LanguageNotifier.isIndonesian.value;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                  color: Colors.white, strokeWidth: 2),
+            ),
+            const SizedBox(width: 12),
+            Text(isIndo
+                ? 'Menghapus foto dari database...'
+                : 'Removing photo from database...'),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: const Color(0xFF333333),
+      ),
+    );
+
+    final success = await SupabaseService.updateProfileAvatar(null);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+    if (success) {
+      await SupabaseService.fetchUserProfile();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFF46D369),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          content: Text(isIndo
+              ? 'Foto profil berhasil dihapus dari database!'
+              : 'Profile photo removed from database successfully!'),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFFE50914),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          content: Text(isIndo
+              ? 'Gagal menghapus foto dari database server.'
+              : 'Failed to remove photo from server database.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    final isIndo = LanguageNotifier.isIndonesian.value;
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(
+        source: source,
+        maxWidth: 400,
+        maxHeight: 400,
+        imageQuality: 75,
+      );
+
+      if (pickedFile == null) return;
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                    color: Colors.white, strokeWidth: 2),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                isIndo
+                    ? 'Menyimpan foto ke database...'
+                    : 'Saving photo to database...',
+                style: GoogleFonts.inter(fontSize: 13),
+              ),
+            ],
+          ),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: const Color(0xFF333333),
+        ),
+      );
+
+      final bytes = await pickedFile.readAsBytes();
+      final base64String = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+
+      // Save to Supabase Storage bucket 'avatars' (fallback to profiles table)
+      final success = await SupabaseService.updateProfileAvatar(base64String, rawBytes: bytes);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+      if (success) {
+        // Re-fetch from server to verify synchronization
+        await SupabaseService.fetchUserProfile();
+        if (!mounted) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFF46D369),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10)),
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle_rounded,
+                    color: Colors.white, size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  isIndo
+                      ? 'Foto profil berhasil disimpan ke database!'
+                      : 'Profile photo saved to database successfully!',
+                  style: GoogleFonts.inter(fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: const Color(0xFFE50914),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10)),
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline_rounded,
+                    color: Colors.white, size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  isIndo
+                      ? 'Gagal menyimpan foto ke database server.'
+                      : 'Failed to save photo to server database.',
+                  style: GoogleFonts.inter(fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.red,
+            content: Text('Error: $e'),
+          ),
+        );
+      }
     }
   }
 
@@ -1134,16 +1413,16 @@ class _ProfileScreenState extends State<ProfileScreen>
                             Material(
                               color: Colors.transparent,
                               child: InkWell(
-                                onTap: () => _contactAdminWhatsApp(),
+                                onTap: _navigateToHelpCenter,
                                 borderRadius: BorderRadius.circular(10),
                                 child: Container(
                                   padding: const EdgeInsets.all(8),
                                   decoration: BoxDecoration(
-                                    color: const Color(0xFF25D366).withValues(alpha: 0.3),
+                                    color: Colors.white.withValues(alpha: 0.2),
                                     borderRadius: BorderRadius.circular(10),
                                   ),
-                                  child: const Icon(Icons.chat_rounded,
-                                      color: Colors.white, size: 18),
+                                  child: const Icon(Icons.support_agent_rounded,
+                                      color: Colors.white, size: 20),
                                 ),
                               ),
                             ),
@@ -1162,131 +1441,169 @@ class _ProfileScreenState extends State<ProfileScreen>
                           ),
                           child: Row(
                             children: [
-                              // Avatar
-                              Container(
-                                width: 56,
-                                height: 56,
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    colors: [
-                                      Color(0xFFFF6B6B),
-                                      Color(0xFFE50914)
-                                    ],
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                  ),
-                                  borderRadius: BorderRadius.circular(14),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color:
-                                          Colors.black.withValues(alpha: 0.3),
-                                      blurRadius: 8,
-                                      offset: const Offset(0, 3),
+                              // Avatar with Photo Upload & reactive display (Anti-flicker memoized)
+                              InkWell(
+                                onTap: _pickAndUploadAvatar,
+                                borderRadius: BorderRadius.circular(14),
+                                child: Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    Container(
+                                      width: 58,
+                                      height: 58,
+                                      decoration: BoxDecoration(
+                                        gradient: const LinearGradient(
+                                          colors: [
+                                            Color(0xFFFF6B6B),
+                                            Color(0xFFE50914)
+                                          ],
+                                          begin: Alignment.topLeft,
+                                          end: Alignment.bottomRight,
+                                        ),
+                                        borderRadius:
+                                            BorderRadius.circular(14),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.black
+                                                .withValues(alpha: 0.3),
+                                            blurRadius: 8,
+                                            offset: const Offset(0, 3),
+                                          ),
+                                        ],
+                                      ),
+                                      child: UserAvatar(
+                                        size: 58,
+                                        isCircle: false,
+                                        borderRadius:
+                                            BorderRadius.circular(14),
+                                        fontSize: 24,
+                                        fallbackBackgroundColor:
+                                            Colors.transparent,
+                                        fallbackName: widget.username,
+                                      ),
+                                    ),
+                                    // Camera Badge
+                                    Positioned(
+                                      bottom: -2,
+                                      right: -2,
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFE50914),
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: Colors.white,
+                                            width: 1.5,
+                                          ),
+                                        ),
+                                        child: const Icon(
+                                          Icons.camera_alt_rounded,
+                                          color: Colors.white,
+                                          size: 11,
+                                        ),
+                                      ),
                                     ),
                                   ],
-                                ),
-                                child: Center(
-                                  child: Text(
-                                    widget.username.isNotEmpty
-                                        ? widget.username[0].toUpperCase()
-                                        : 'U',
-                                    style: GoogleFonts.inter(
-                                      fontSize: 24,
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
                                 ),
                               ),
                               const SizedBox(width: 14),
                               // User Info
                               Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
+                                child: ValueListenableBuilder<String>(
+                                  valueListenable: UserNotifier.username,
+                                  builder: (context, currentUsername, _) {
+                                    final displayName = currentUsername.isNotEmpty
+                                        ? currentUsername
+                                        : widget.username;
+
+                                    return Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Flexible(
-                                          child: Text(
-                                            widget.username,
-                                            style: GoogleFonts.inter(
-                                              fontSize: 17,
-                                              fontWeight: FontWeight.bold,
-                                              color: Colors.white,
+                                        Row(
+                                          children: [
+                                            Flexible(
+                                              child: Text(
+                                                displayName,
+                                                style: GoogleFonts.inter(
+                                                  fontSize: 17,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.white,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
                                             ),
-                                            overflow: TextOverflow.ellipsis,
+                                            const SizedBox(width: 6),
+                                            const Icon(Icons.verified_rounded,
+                                                color: Color(0xFF4FC3F7),
+                                                size: 16),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '@${displayName.toLowerCase()}',
+                                          style: GoogleFonts.inter(
+                                            fontSize: 12,
+                                            color: Colors.white60,
                                           ),
                                         ),
-                                        const SizedBox(width: 6),
-                                        const Icon(Icons.verified_rounded,
-                                            color: Color(0xFF4FC3F7),
-                                            size: 16),
+                                        const SizedBox(height: 6),
+                                        // Status Badge
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 10, vertical: 3),
+                                          decoration: BoxDecoration(
+                                            color: _remainingDays > 0
+                                                ? const Color(0xFF46D369)
+                                                    .withValues(alpha: 0.25)
+                                                : Colors.redAccent
+                                                    .withValues(alpha: 0.25),
+                                            borderRadius: BorderRadius.circular(20),
+                                            border: Border.all(
+                                              color: _remainingDays > 0
+                                                  ? const Color(0xFF46D369)
+                                                      .withValues(alpha: 0.5)
+                                                  : Colors.redAccent
+                                                      .withValues(alpha: 0.5),
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Container(
+                                                width: 5,
+                                                height: 5,
+                                                decoration: BoxDecoration(
+                                                  color: _remainingDays > 0
+                                                      ? const Color(0xFF46D369)
+                                                      : Colors.redAccent,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 5),
+                                              Text(
+                                                _remainingDays > 0
+                                                    ? (LanguageNotifier
+                                                            .isIndonesian.value
+                                                        ? 'Member VIP Aktif'
+                                                        : 'Active VIP Member')
+                                                    : (LanguageNotifier
+                                                            .isIndonesian.value
+                                                        ? 'Member Free'
+                                                        : 'Free Member'),
+                                                style: GoogleFonts.inter(
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  color: _remainingDays > 0
+                                                      ? const Color(0xFF46D369)
+                                                      : Colors.redAccent,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
                                       ],
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      '@${widget.username.toLowerCase()}',
-                                      style: GoogleFonts.inter(
-                                        fontSize: 12,
-                                        color: Colors.white60,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    // Status Badge
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 10, vertical: 3),
-                                      decoration: BoxDecoration(
-                                        color: _remainingDays > 0
-                                            ? const Color(0xFF46D369)
-                                                .withValues(alpha: 0.25)
-                                            : Colors.redAccent
-                                                .withValues(alpha: 0.25),
-                                        borderRadius: BorderRadius.circular(20),
-                                        border: Border.all(
-                                          color: _remainingDays > 0
-                                              ? const Color(0xFF46D369)
-                                                  .withValues(alpha: 0.5)
-                                              : Colors.redAccent
-                                                  .withValues(alpha: 0.5),
-                                        ),
-                                      ),
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Container(
-                                            width: 5,
-                                            height: 5,
-                                            decoration: BoxDecoration(
-                                              color: _remainingDays > 0
-                                                  ? const Color(0xFF46D369)
-                                                  : Colors.redAccent,
-                                              shape: BoxShape.circle,
-                                            ),
-                                          ),
-                                          const SizedBox(width: 5),
-                                          Text(
-                                            _remainingDays > 0
-                                                ? (LanguageNotifier
-                                                        .isIndonesian.value
-                                                    ? 'Member VIP Aktif'
-                                                    : 'Active VIP Member')
-                                                : (LanguageNotifier
-                                                        .isIndonesian.value
-                                                    ? 'Member Free'
-                                                    : 'Free Member'),
-                                            style: GoogleFonts.inter(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold,
-                                              color: _remainingDays > 0
-                                                  ? const Color(0xFF46D369)
-                                                  : Colors.redAccent,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
+                                    );
+                                  },
                                 ),
                               ),
                             ],
@@ -1380,12 +1697,14 @@ class _ProfileScreenState extends State<ProfileScreen>
                     ),
                     _buildMenuCard(
                       icon: Icons.support_agent_rounded,
-                      iconColor: const Color(0xFF25D366),
-                      title: 'Customer Service WhatsApp',
+                      iconColor: const Color(0xFFE50914),
+                      title: LanguageNotifier.isIndonesian.value
+                          ? 'Customer Service'
+                          : 'Customer Service',
                       subtitle: LanguageNotifier.isIndonesian.value
-                          ? 'Hubungi admin 24/7 jika ada kendala akun'
-                          : 'Contact admin 24/7 for account issues',
-                      onTap: () => _contactAdminWhatsApp(),
+                          ? 'Pusat bantuan & solusi kendala pemakaian (24/7)'
+                          : 'Help center & usage solutions (24/7)',
+                      onTap: _navigateToHelpCenter,
                       isDark: isDark,
                     ),
                     const SizedBox(height: 20),
@@ -1524,44 +1843,55 @@ class _ProfileScreenState extends State<ProfileScreen>
                   ],
                 ),
               ),
-              // Status Chip
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: _isAccessExpired
-                      ? Colors.redAccent.withValues(alpha: 0.12)
-                      : const Color(0xFF46D369).withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  _getRemainingTimeText(),
-                  style: GoogleFonts.inter(
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    color: _isAccessExpired
-                        ? Colors.redAccent
-                        : const Color(0xFF46D369),
-                  ),
-                ),
+              // Status Chip (Isolated reactive update)
+              ValueListenableBuilder<DateTime>(
+                valueListenable: _countdownTicker,
+                builder: (context, _, __) {
+                  return Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _isAccessExpired
+                          ? Colors.redAccent.withValues(alpha: 0.12)
+                          : const Color(0xFF46D369).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      _getRemainingTimeText(),
+                      style: GoogleFonts.inter(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: _isAccessExpired
+                            ? Colors.redAccent
+                            : const Color(0xFF46D369),
+                      ),
+                    ),
+                  );
+                },
               ),
             ],
           ),
           const SizedBox(height: 14),
 
-          // Progress Bar
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: LinearProgressIndicator(
-              value: _expiryProgress,
-              backgroundColor: isDark ? Colors.white10 : Colors.grey.shade200,
-              color: _isAccessExpired
-                  ? Colors.redAccent
-                  : (_remainingDays <= 5
-                      ? Colors.orangeAccent
-                      : const Color(0xFFE50914)),
-              minHeight: 5,
-            ),
+          // Progress Bar (Isolated reactive update)
+          ValueListenableBuilder<DateTime>(
+            valueListenable: _countdownTicker,
+            builder: (context, _, __) {
+              return ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: LinearProgressIndicator(
+                  value: _expiryProgress,
+                  backgroundColor:
+                      isDark ? Colors.white10 : Colors.grey.shade200,
+                  color: _isAccessExpired
+                      ? Colors.redAccent
+                      : (_remainingDays <= 5
+                          ? Colors.orangeAccent
+                          : const Color(0xFFE50914)),
+                  minHeight: 5,
+                ),
+              );
+            },
           ),
           const SizedBox(height: 14),
 

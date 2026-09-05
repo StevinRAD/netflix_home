@@ -5,11 +5,13 @@ import 'package:showcaseview/showcaseview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:math' as math;
-import '../models/account_model.dart';
 import '../services/supabase_service.dart';
 import '../services/update_service.dart';
 import '../utils/language_notifier.dart';
+import '../utils/user_notifier.dart';
+import '../widgets/user_avatar.dart';
 import 'dashboard_guide_screen.dart';
+import 'help_center_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final String username;
@@ -27,7 +29,7 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen>
     with TickerProviderStateMixin {
-  List<CookieAccount> _accounts = [];
+  AccountsOverview _overview = const AccountsOverview();
   bool _isLoading = true;
 
   DateTime? _accessExpiryDate;
@@ -59,6 +61,9 @@ class _DashboardScreenState extends State<DashboardScreen>
   final GlobalKey _keyStartButton = GlobalKey();
 
   Timer? _countdownTimer;
+  final ValueNotifier<DateTime> _countdownTicker =
+      ValueNotifier<DateTime>(DateTime.now());
+  bool _lastExpiredState = false;
   late AnimationController _pulseController;
   late AnimationController _fadeController;
   late Animation<double> _pulseAnimation;
@@ -87,6 +92,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
     _loadAccounts();
     _loadExpiryDate();
+    SupabaseService.fetchUserProfile();
     _startTimer();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkFirstTimeGuide();
@@ -95,9 +101,15 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _startTimer() {
+    _lastExpiredState = _isAccessExpired;
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
-        setState(() {}); // Update the countdown every second
+        _countdownTicker.value = DateTime.now();
+        final currentExpired = _isAccessExpired;
+        if (currentExpired != _lastExpiredState) {
+          _lastExpiredState = currentExpired;
+          setState(() {});
+        }
       }
     });
   }
@@ -105,6 +117,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   @override
   void dispose() {
     _countdownTimer?.cancel();
+    _countdownTicker.dispose();
     _pulseController.dispose();
     _fadeController.dispose();
     super.dispose();
@@ -173,11 +186,11 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   Future<void> _loadAccounts() async {
     setState(() => _isLoading = true);
-    final accounts = await SupabaseService.fetchCookieAccounts();
+    final overview = await SupabaseService.fetchAccountsOverview();
     await _loadExpiryDate();
     if (mounted) {
       setState(() {
-        _accounts = accounts;
+        _overview = overview;
         _isLoading = false;
       });
       _fadeController.forward();
@@ -211,6 +224,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
 
       final int successCount = await SupabaseService.syncTxtFilesFromStorage();
+      await SupabaseService.fetchUserProfile();
 
       if (mounted) {
         ScaffoldMessenger.of(context).hideCurrentSnackBar();
@@ -297,6 +311,19 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
+  void _navigateToHelpCenter() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => HelpCenterScreen(
+          username: UserNotifier.username.value.isNotEmpty
+              ? UserNotifier.username.value
+              : widget.username,
+        ),
+      ),
+    );
+  }
+
   String _getRemainingTimeText() {
     if (_accessExpiryDate == null || _isAccessExpired) {
       return LanguageNotifier.isIndonesian.value
@@ -331,20 +358,12 @@ class _DashboardScreenState extends State<DashboardScreen>
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
-    final totalCount = _accounts.length;
-    final liveCount = _accounts.where((a) => a.status == 'LIVE').length;
-    final basicCount = _accounts
-        .where((a) => a.planName.toLowerCase().contains('basic'))
-        .length;
-    final standardCount = _accounts
-        .where((a) => a.planName.toLowerCase().contains('standard'))
-        .length;
-    final premiumCount = _accounts
-        .where((a) => a.planName.toLowerCase().contains('premium'))
-        .length;
-    final mobileCount = _accounts
-        .where((a) => a.planName.toLowerCase().contains('mobile'))
-        .length;
+    final totalCount = _overview.totalCount;
+    final liveCount = _overview.liveCount;
+    final basicCount = _overview.basicCount;
+    final standardCount = _overview.standardCount;
+    final premiumCount = _overview.premiumCount;
+    final mobileCount = _overview.mobileCount;
 
     return Scaffold(
       body: _isLoading
@@ -486,6 +505,39 @@ class _DashboardScreenState extends State<DashboardScreen>
                                         ],
                                       ),
                                       const Spacer(),
+                                      // Customer Service / Help Center button
+                                      Material(
+                                        color: Colors.transparent,
+                                        child: InkWell(
+                                          onTap: _navigateToHelpCenter,
+                                          borderRadius: BorderRadius.circular(12),
+                                          child: Container(
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              gradient: LinearGradient(
+                                                colors: [
+                                                  Colors.white.withValues(alpha: 0.2),
+                                                  Colors.white.withValues(alpha: 0.08),
+                                                ],
+                                              ),
+                                              borderRadius: BorderRadius.circular(12),
+                                              border: Border.all(
+                                                color: Colors.white.withValues(alpha: 0.15),
+                                              ),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: Colors.black.withValues(alpha: 0.15),
+                                                  blurRadius: 8,
+                                                  offset: const Offset(0, 2),
+                                                ),
+                                              ],
+                                            ),
+                                            child: const Icon(Icons.support_agent_rounded,
+                                                color: Colors.white, size: 20),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
                                       // Sync button with glow
                                       Material(
                                         color: Colors.transparent,
@@ -541,7 +593,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                                     ),
                                     child: Row(
                                       children: [
-                                        // Avatar with gradient ring
+                                        // Avatar with gradient ring & photo support (Anti-flicker memoized)
                                         Container(
                                           padding: const EdgeInsets.all(3),
                                           decoration: BoxDecoration(
@@ -557,111 +609,115 @@ class _DashboardScreenState extends State<DashboardScreen>
                                             ),
                                             boxShadow: [
                                               BoxShadow(
-                                                color: Colors.orangeAccent.withValues(alpha: 0.4),
+                                                color: Colors.orangeAccent
+                                                    .withValues(alpha: 0.4),
                                                 blurRadius: 10,
                                                 spreadRadius: 1,
                                               ),
                                             ],
                                           ),
-                                          child: CircleAvatar(
-                                            radius: 20,
-                                            backgroundColor: const Color(0xFFB00710),
-                                            child: Text(
-                                              widget.username.isNotEmpty
-                                                  ? widget.username[0].toUpperCase()
-                                                  : 'U',
-                                              style: GoogleFonts.inter(
-                                                fontWeight: FontWeight.w900,
-                                                color: Colors.white,
-                                                fontSize: 18,
-                                              ),
-                                            ),
+                                          child: UserAvatar(
+                                            size: 40,
+                                            isCircle: true,
+                                            fontSize: 18,
+                                            fallbackBackgroundColor:
+                                                const Color(0xFFB00710),
+                                            fallbackName: widget.username,
                                           ),
                                         ),
                                         const SizedBox(width: 12),
                                         Expanded(
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                _getGreeting(),
-                                                style: GoogleFonts.inter(
-                                                  fontSize: 10,
-                                                  color: Colors.white60,
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                              const SizedBox(height: 1),
-                                              Text(
-                                                widget.username,
-                                                style: GoogleFonts.inter(
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.w800,
-                                                  color: Colors.white,
-                                                ),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                              const SizedBox(height: 4),
-                                              // Status badge
-                                              Container(
-                                                padding: const EdgeInsets.symmetric(
-                                                    horizontal: 8, vertical: 3),
-                                                decoration: BoxDecoration(
-                                                  color: _isAccessExpired
-                                                      ? Colors.orangeAccent.withValues(alpha: 0.25)
-                                                      : const Color(0xFF46D369).withValues(alpha: 0.25),
-                                                  borderRadius: BorderRadius.circular(8),
-                                                  border: Border.all(
-                                                    color: _isAccessExpired
-                                                        ? Colors.orangeAccent.withValues(alpha: 0.4)
-                                                        : const Color(0xFF46D369).withValues(alpha: 0.4),
+                                          child: ValueListenableBuilder<String>(
+                                            valueListenable: UserNotifier.username,
+                                            builder: (context, currentUsername, _) {
+                                              final displayName = currentUsername.isNotEmpty
+                                                  ? currentUsername
+                                                  : widget.username;
+
+                                              return Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    _getGreeting(),
+                                                    style: GoogleFonts.inter(
+                                                      fontSize: 10,
+                                                      color: Colors.white60,
+                                                      fontWeight: FontWeight.w500,
+                                                    ),
                                                   ),
-                                                ),
-                                                child: Row(
-                                                  mainAxisSize: MainAxisSize.min,
-                                                  children: [
-                                                    Container(
-                                                      width: 6,
-                                                      height: 6,
-                                                      decoration: BoxDecoration(
+                                                  const SizedBox(height: 1),
+                                                  Text(
+                                                    displayName,
+                                                    style: GoogleFonts.inter(
+                                                      fontSize: 16,
+                                                      fontWeight: FontWeight.w800,
+                                                      color: Colors.white,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                  const SizedBox(height: 4),
+                                                  // Status badge
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(
+                                                        horizontal: 8, vertical: 3),
+                                                    decoration: BoxDecoration(
+                                                      color: _isAccessExpired
+                                                          ? Colors.orangeAccent.withValues(alpha: 0.25)
+                                                          : const Color(0xFF46D369).withValues(alpha: 0.25),
+                                                      borderRadius: BorderRadius.circular(8),
+                                                      border: Border.all(
                                                         color: _isAccessExpired
-                                                            ? Colors.orangeAccent
-                                                            : const Color(0xFF46D369),
-                                                        shape: BoxShape.circle,
-                                                        boxShadow: [
-                                                          BoxShadow(
-                                                            color: (_isAccessExpired
-                                                                    ? Colors.orangeAccent
-                                                                    : const Color(0xFF46D369))
-                                                                .withValues(alpha: 0.6),
-                                                            blurRadius: 4,
-                                                            spreadRadius: 1,
+                                                            ? Colors.orangeAccent.withValues(alpha: 0.4)
+                                                            : const Color(0xFF46D369).withValues(alpha: 0.4),
+                                                      ),
+                                                    ),
+                                                    child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Container(
+                                                          width: 6,
+                                                          height: 6,
+                                                          decoration: BoxDecoration(
+                                                            color: _isAccessExpired
+                                                                ? Colors.orangeAccent
+                                                                : const Color(0xFF46D369),
+                                                            shape: BoxShape.circle,
+                                                            boxShadow: [
+                                                              BoxShadow(
+                                                                color: (_isAccessExpired
+                                                                        ? Colors.orangeAccent
+                                                                        : const Color(0xFF46D369))
+                                                                    .withValues(alpha: 0.6),
+                                                                blurRadius: 4,
+                                                                spreadRadius: 1,
+                                                              ),
+                                                            ],
                                                           ),
-                                                        ],
-                                                      ),
+                                                        ),
+                                                        const SizedBox(width: 5),
+                                                        Text(
+                                                          _isAccessExpired
+                                                              ? (LanguageNotifier.isIndonesian.value
+                                                                  ? 'Paket Tidak Aktif'
+                                                                  : 'Package Inactive')
+                                                              : (LanguageNotifier.isIndonesian.value
+                                                                  ? 'Pelanggan Aktif'
+                                                                  : 'Active Subscriber'),
+                                                          style: GoogleFonts.inter(
+                                                            fontSize: 10,
+                                                            fontWeight: FontWeight.w700,
+                                                            color: _isAccessExpired
+                                                                ? Colors.orangeAccent
+                                                                : const Color(0xFF46D369),
+                                                          ),
+                                                        ),
+                                                      ],
                                                     ),
-                                                    const SizedBox(width: 5),
-                                                    Text(
-                                                      _isAccessExpired
-                                                          ? (LanguageNotifier.isIndonesian.value
-                                                              ? 'Paket Tidak Aktif'
-                                                              : 'Package Inactive')
-                                                          : (LanguageNotifier.isIndonesian.value
-                                                              ? 'Pelanggan Aktif'
-                                                              : 'Active Subscriber'),
-                                                      style: GoogleFonts.inter(
-                                                        fontSize: 10,
-                                                        fontWeight: FontWeight.w700,
-                                                        color: _isAccessExpired
-                                                            ? Colors.orangeAccent
-                                                            : const Color(0xFF46D369),
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ],
+                                                  ),
+                                                ],
+                                              );
+                                            },
                                           ),
                                         ),
                                         // Mini stats column
@@ -1058,62 +1114,76 @@ class _DashboardScreenState extends State<DashboardScreen>
           ),
           const SizedBox(height: 14),
 
-          // Countdown Timer
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: isDark
-                  ? Colors.white.withValues(alpha: 0.05)
-                  : Colors.grey.shade50,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  _isAccessExpired
-                      ? Icons.timer_off_outlined
-                      : Icons.hourglass_top_rounded,
-                  size: 18,
-                  color: _isAccessExpired
-                      ? Colors.redAccent
-                      : (_remainingDays <= 5
-                          ? Colors.orangeAccent
-                          : const Color(0xFF46D369)),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    _getRemainingTimeText(),
-                    style: GoogleFonts.inter(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
+          // Countdown Timer & Progress Bar (Isolated reactive update)
+          ValueListenableBuilder<DateTime>(
+            valueListenable: _countdownTicker,
+            builder: (context, _, __) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isDark
+                          ? Colors.white.withValues(alpha: 0.05)
+                          : Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isAccessExpired
+                              ? Icons.timer_off_outlined
+                              : Icons.hourglass_top_rounded,
+                          size: 18,
+                          color: _isAccessExpired
+                              ? Colors.redAccent
+                              : (_remainingDays <= 5
+                                  ? Colors.orangeAccent
+                                  : const Color(0xFF46D369)),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _getRemainingTimeText(),
+                            style: GoogleFonts.inter(
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                              color: _isAccessExpired
+                                  ? Colors.redAccent
+                                  : (_remainingDays <= 5
+                                      ? Colors.orangeAccent
+                                      : (isDark
+                                          ? Colors.white
+                                          : Colors.black87)),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Progress Bar
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: LinearProgressIndicator(
+                      value: _expiryProgress,
+                      backgroundColor:
+                          isDark ? Colors.white10 : Colors.grey.shade200,
                       color: _isAccessExpired
                           ? Colors.redAccent
                           : (_remainingDays <= 5
                               ? Colors.orangeAccent
-                              : (isDark ? Colors.white : Colors.black87)),
+                              : const Color(0xFF46D369)),
+                      minHeight: 5,
                     ),
                   ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-
-          // Progress Bar
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: LinearProgressIndicator(
-              value: _expiryProgress,
-              backgroundColor: isDark ? Colors.white10 : Colors.grey.shade200,
-              color: _isAccessExpired
-                  ? Colors.redAccent
-                  : (_remainingDays <= 5
-                      ? Colors.orangeAccent
-                      : const Color(0xFF46D369)),
-              minHeight: 5,
-            ),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 12),
 
@@ -1397,26 +1467,34 @@ class _DashboardScreenState extends State<DashboardScreen>
           ),
           const SizedBox(height: 14),
           _buildRuleItem(
-            icon: Icons.people_outline,
+            icon: Icons.person_add_alt_1_outlined,
             text: LanguageNotifier.isIndonesian.value
-                ? 'Gunakan profil yang sudah tersedia di akun.'
-                : 'Use existing profiles in the account.',
+                ? 'Boleh tambah profil baru jika ada slot kosong, asalkan TIDAK MENGHAPUS profil yang sudah ada.'
+                : 'You may add a new profile if an empty slot exists, but DO NOT DELETE existing profiles.',
             isDark: isDark,
           ),
           const SizedBox(height: 8),
           _buildRuleItem(
-            icon: Icons.flash_on_outlined,
+            icon: Icons.translate_rounded,
             text: LanguageNotifier.isIndonesian.value
-                ? 'Gunakan link otomatis untuk masuk tanpa perlu email dan sandi.'
-                : 'Use auto-login link to sign in without email and password.',
+                ? 'Bebas ubah bahasa akun ke Bahasa Indonesia jika tampilan akun berbahasa negara lain.'
+                : 'Feel free to change profile language back to Bahasa Indonesia if foreign.',
             isDark: isDark,
           ),
           const SizedBox(height: 8),
           _buildRuleItem(
-            icon: Icons.do_not_disturb_on_outlined,
+            icon: Icons.tv_off_outlined,
             text: LanguageNotifier.isIndonesian.value
-                ? 'Jangan mengubah profil, email, atau sandi akun Netflix.'
-                : 'Do not change the profile, email, or password of Netflix account.',
+                ? 'Jika terkena limit layar menonton, keluar dari Netflix & ambil akun baru di Netflix Home (stok melimpah).'
+                : 'If screen watching limit is reached, logout from Netflix and pick another account in Netflix Home.',
+            isDark: isDark,
+          ),
+          const SizedBox(height: 8),
+          _buildRuleItem(
+            icon: Icons.lock_outline_rounded,
+            text: LanguageNotifier.isIndonesian.value
+                ? 'Dilarang keras mengubah email atau password akun Netflix demi keamanan bersama.'
+                : 'Never change the email or password of the Netflix account.',
             isDark: isDark,
           ),
         ],

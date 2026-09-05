@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../services/supabase_service.dart';
 import '../utils/language_notifier.dart';
+import '../utils/user_notifier.dart';
+import 'login_help_modal.dart';
 import 'main_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -35,7 +36,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final packageInfo = await PackageInfo.fromPlatform();
     if (mounted) {
       setState(() {
-        _appVersion = 'v${packageInfo.version}+${packageInfo.buildNumber}';
+        _appVersion = 'v${packageInfo.version}';
       });
     }
   }
@@ -87,7 +88,9 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = false);
 
     if (success) {
-      final displayName = _isRegistering ? name : (email.split('@').first);
+      final displayName = UserNotifier.username.value.isNotEmpty
+          ? UserNotifier.username.value
+          : (_isRegistering ? name : (email.split('@').first));
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => MainScreen(username: displayName)),
       );
@@ -102,93 +105,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _showHelpModal() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1F1F1F),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            const Icon(Icons.help_outline, color: Color(0xFFE50914), size: 24),
-            const SizedBox(width: 10),
-            Text(
-              LanguageNotifier.tr('help_center'),
-              style: GoogleFonts.inter(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        content: SizedBox(
-          width: 440,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF2B2B2B),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        LanguageNotifier.tr('customer_service'),
-                        style: GoogleFonts.inter(color: const Color(0xFF46D369), fontSize: 13, fontWeight: FontWeight.bold),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        LanguageNotifier.tr('help_desc'),
-                        style: GoogleFonts.inter(color: Colors.white70, fontSize: 12),
-                      ),
-                      const SizedBox(height: 10),
-                      ElevatedButton.icon(
-                        onPressed: () async {
-                          final text = 'Halo Admin Netflix Home, saya butuh bantuan login';
-                          final waUrl = Uri.parse('https://wa.me/6282268426070?text=${Uri.encodeComponent(text)}');
-                          final waAppUrl = Uri.parse('whatsapp://send?phone=6282268426070&text=${Uri.encodeComponent(text)}');
-                          try {
-                            if (await canLaunchUrl(waAppUrl)) {
-                              await launchUrl(waAppUrl, mode: LaunchMode.externalApplication);
-                            } else {
-                              await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-                            }
-                          } catch (_) {
-                            await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-                          }
-                        },
-                        icon: const Icon(Icons.chat_bubble_outline, size: 16),
-                        label: Text(LanguageNotifier.tr('contact_admin')),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF25D366),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          textStyle: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Text(LanguageNotifier.tr('login_guide_title'), style: GoogleFonts.inter(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 6),
-                Text(LanguageNotifier.tr('login_guide_1'), style: GoogleFonts.inter(color: Colors.white70, fontSize: 12)),
-                Text(LanguageNotifier.tr('login_guide_2'), style: GoogleFonts.inter(color: Colors.white70, fontSize: 12)),
-                Text(LanguageNotifier.tr('login_guide_3'), style: GoogleFonts.inter(color: Colors.white70, fontSize: 12)),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text(LanguageNotifier.tr('close'), style: const TextStyle(color: Color(0xFFE50914), fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
+    LoginHelpModal.show(context);
   }
 
   @override
