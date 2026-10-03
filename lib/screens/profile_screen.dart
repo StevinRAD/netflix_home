@@ -16,6 +16,7 @@ import 'package:image_picker/image_picker.dart';
 import '../utils/user_notifier.dart';
 import '../widgets/user_avatar.dart';
 import 'help_center_screen.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String username;
@@ -96,8 +97,14 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
+  bool get _isPermanent {
+    if (_accessExpiryDate == null) return false;
+    return _accessExpiryDate!.year > 2090;
+  }
+
   bool get _isAccessExpired {
     if (_accessExpiryDate == null) return true;
+    if (_isPermanent) return false;
     return DateTime.now().isAfter(_accessExpiryDate!);
   }
 
@@ -121,6 +128,12 @@ class _ProfileScreenState extends State<ProfileScreen>
       return LanguageNotifier.isIndonesian.value
           ? 'Paket Habis'
           : 'Package Expired';
+    }
+
+    if (_isPermanent) {
+      return LanguageNotifier.isIndonesian.value
+          ? 'Permanen'
+          : 'Permanent';
     }
 
     if (diff.inHours < 24) {
@@ -148,6 +161,7 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   double get _expiryProgress {
     if (_accessExpiryDate == null || _isAccessExpired) return 0.0;
+    if (_isPermanent) return 1.0;
     final diff = _accessExpiryDate!.difference(DateTime.now());
     return (diff.inDays / 30.0).clamp(0.0, 1.0);
   }
@@ -1329,14 +1343,17 @@ class _ProfileScreenState extends State<ProfileScreen>
                   const SizedBox(width: 12),
                   Expanded(
                     child: ElevatedButton(
-                      onPressed: () {
+                      onPressed: () async {
                         Navigator.pop(ctx);
-                        Navigator.pushAndRemoveUntil(
-                          context,
-                          MaterialPageRoute(
-                              builder: (context) => const LoginScreen()),
-                          (route) => false,
-                        );
+                        await SupabaseService.logout();
+                        if (context.mounted) {
+                          Navigator.pushAndRemoveUntil(
+                            context,
+                            MaterialPageRoute(
+                                builder: (context) => const LoginScreen()),
+                            (route) => false,
+                          );
+                        }
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFE50914),
@@ -1369,9 +1386,12 @@ class _ProfileScreenState extends State<ProfileScreen>
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final expiryFormatted = _accessExpiryDate != null
-        ? '${_accessExpiryDate!.day} ${_getIndonesianMonth(_accessExpiryDate!.month)} ${_accessExpiryDate!.year}'
-        : '-';
+    final isGoogleAuth = Supabase.instance.client.auth.currentUser?.appMetadata['provider'] == 'google';
+    final expiryFormatted = _isPermanent
+        ? (LanguageNotifier.isIndonesian.value ? 'Berlaku Selamanya' : 'Lifetime Access')
+        : (_accessExpiryDate != null
+            ? '${_accessExpiryDate!.day} ${_getIndonesianMonth(_accessExpiryDate!.month)} ${_accessExpiryDate!.year}'
+            : '-');
 
     return Scaffold(
       body: CustomScrollView(
@@ -1721,18 +1741,19 @@ class _ProfileScreenState extends State<ProfileScreen>
 
                     // Dark Mode Toggle
                     _buildDarkModeToggle(isDark),
-                    _buildMenuCard(
-                      icon: Icons.lock_outline_rounded,
-                      iconColor: Colors.orangeAccent,
-                      title: LanguageNotifier.isIndonesian.value
-                          ? 'Ganti Kata Sandi'
-                          : 'Change Password',
-                      subtitle: LanguageNotifier.isIndonesian.value
-                          ? 'Perbarui password login aplikasi Anda'
-                          : 'Update your app login password',
-                      onTap: _showChangePasswordModal,
-                      isDark: isDark,
-                    ),
+                    if (!isGoogleAuth)
+                      _buildMenuCard(
+                        icon: Icons.lock_outline_rounded,
+                        iconColor: Colors.orangeAccent,
+                        title: LanguageNotifier.isIndonesian.value
+                            ? 'Ganti Kata Sandi'
+                            : 'Change Password',
+                        subtitle: LanguageNotifier.isIndonesian.value
+                            ? 'Perbarui password login aplikasi Anda'
+                            : 'Update your app login password',
+                        onTap: _showChangePasswordModal,
+                        isDark: isDark,
+                      ),
                     _buildMenuCard(
                       icon: Icons.info_outline_rounded,
                       iconColor: Colors.tealAccent.shade400,

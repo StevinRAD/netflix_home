@@ -6,6 +6,8 @@ import 'accounts_screen.dart';
 import 'dashboard_screen.dart';
 import 'profile_screen.dart';
 
+import '../services/presence_service.dart';
+
 class MainScreen extends StatefulWidget {
   final String username;
   const MainScreen({super.key, required this.username});
@@ -16,6 +18,18 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _currentIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    PresenceService.instance.startTracking();
+  }
+
+  @override
+  void dispose() {
+    PresenceService.instance.stopTracking();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

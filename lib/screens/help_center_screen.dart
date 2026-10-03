@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../utils/language_notifier.dart';
-import '../utils/user_notifier.dart';
 import '../widgets/video_tutorial_modal.dart';
+import 'support_chat_screen.dart';
 
 class HelpCenterScreen extends StatefulWidget {
   final String? username;
@@ -157,60 +156,24 @@ class _HelpCenterScreenState extends State<HelpCenterScreen> {
   ];
 
   Future<void> _contactAdminWhatsApp() async {
-    final currentUsername = widget.username ??
-        (UserNotifier.username.value.isNotEmpty
-            ? UserNotifier.username.value
-            : 'Pengguna');
     final queryText = _searchController.text.trim();
     final customContext = queryText.isNotEmpty
-        ? 'terkait: "$queryText"'
-        : 'terkait kendala akun/aplikasi';
-
-    final text =
-        'Halo CS Netflix Home, saya ($currentUsername). Saya sudah membaca Pusat Bantuan di aplikasi, namun masih butuh bantuan $customContext. Mohon dibantu ya Admin, terima kasih.';
-
-    final waAppUrl = Uri.parse(
-        'whatsapp://send?phone=6282268426070&text=${Uri.encodeComponent(text)}');
-    final waWebUrl = Uri.parse(
-        'https://wa.me/6282268426070?text=${Uri.encodeComponent(text)}');
-
-    try {
-      if (await canLaunchUrl(waAppUrl)) {
-        await launchUrl(waAppUrl, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(waWebUrl, mode: LaunchMode.externalApplication);
-      }
-    } catch (_) {
-      await launchUrl(waWebUrl, mode: LaunchMode.externalApplication);
-    }
+        ? 'Terkait: "$queryText"'
+        : null;
+        
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SupportChatScreen(initialMessage: customContext),
+      ),
+    );
   }
 
   Future<void> _sendQuestionToWhatsApp(String questionText) async {
-    final currentUsername = widget.username ??
-        (UserNotifier.username.value.isNotEmpty
-            ? UserNotifier.username.value
-            : 'Pengguna');
-
-    final text =
-        'Halo CS Netflix Home, saya ($currentUsername).\n'
-        'Saya mau bertanya mengenai:\n\n'
-        '❓ "$questionText"\n\n'
-        'Mohon dibantu ya Admin CS, terima kasih!';
-
-    final waAppUrl = Uri.parse(
-        'whatsapp://send?phone=6282268426070&text=${Uri.encodeComponent(text)}');
-    final waWebUrl = Uri.parse(
-        'https://wa.me/6282268426070?text=${Uri.encodeComponent(text)}');
-
-    try {
-      if (await canLaunchUrl(waAppUrl)) {
-        await launchUrl(waAppUrl, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(waWebUrl, mode: LaunchMode.externalApplication);
-      }
-    } catch (_) {
-      await launchUrl(waWebUrl, mode: LaunchMode.externalApplication);
-    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SupportChatScreen(initialMessage: questionText),
+      ),
+    );
   }
 
   Widget _buildWaQuestionChip({

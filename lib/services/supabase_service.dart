@@ -2,8 +2,11 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:google_sign_in/google_sign_in.dart' as g_sign_in;
 import '../models/account_model.dart';
 import '../utils/user_notifier.dart';
+import 'presence_service.dart';
 
 class PagedAccountsResult {
   final List<CookieAccount> accounts;
@@ -37,6 +40,171 @@ class SupabaseService {
   // Configurable Supabase credentials (Can be changed in UI Settings or Config)
   static String supabaseUrl = 'https://tscysjowoubdwwaunxbe.supabase.co';
   static String supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRzY3lzam93b3ViZHd3YXVueGJlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgzMzAyNTUsImV4cCI6MjEwMzkwNjI1NX0.LptRgeVBGCea0p-OwAAqEfg9rdEg0xleSslcsMDKfRE';
+
+  /// Request Password Reset OTP email from Supabase Auth
+  static Future<void> sendPasswordResetOtp(String email) async {
+    final client = Supabase.instance.client;
+    await client.auth.resetPasswordForEmail(email.trim());
+  }
+
+  /// Verify Password Reset OTP token and authenticate recovery session
+  static Future<bool> verifyPasswordResetOtp(String email, String token) async {
+    final client = Supabase.instance.client;
+    final response = await client.auth.verifyOTP(
+      email: email.trim(),
+      token: token.trim(),
+      type: OtpType.recovery,
+    );
+    return response.session != null;
+  }
+
+  /// Update password with new password after recovery session is verified
+  static Future<void> updatePassword(String newPassword) async {
+    final client = Supabase.instance.client;
+    await client.auth.updateUser(
+      UserAttributes(password: newPassword.trim()),
+    );
+    await client.auth.signOut();
+  }
+
+  /// Sign in with Google via Native Google Sign In
+  static Future<bool> signInWithGoogle() async {
+    try {
+      const webClientId = '123668620740-p8piii7m4q7nmok4jeupi5oahbd2uv8p.apps.googleusercontent.com';
+
+      await g_sign_in.GoogleSignIn.instance.initialize(
+        clientId: kIsWeb ? webClientId : null,
+        serverClientId: webClientId,
+      );
+      
+      final googleUser = await g_sign_in.GoogleSignIn.instance.authenticate();
+      
+      final googleAuth = await googleUser.authentication;
+      final idToken = googleAuth.idToken;
+
+      if (idToken == null) {
+        throw 'No ID Token found.';
+      }
+
+      final client = Supabase.instance.client;
+      await client.auth.signInWithIdToken(
+        provider: OAuthProvider.google,
+        idToken: idToken,
+      );
+      return true;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Google Sign-In Error: $e');
+      }
+      return false;
+    }
+  }
+
+  /// Handle Google post-login session setup (profiles check & upsert, shared preferences)
+  /// Returns `true` if this user is newly registering via Google and needs onboarding setup,
+  /// or `false` if existing user.
+  static Future<bool> handleOAuthSession(Session session) async {
+    final user = session.user;
+    final userId = user.id;
+    final email = user.email ?? '';
+    final metadata = user.userMetadata ?? {};
+    final defaultUsername = (metadata['full_name'] ?? metadata['name'] ?? metadata['username'] ?? (email.isNotEmpty ? email.split('@').first : 'Pengguna')).toString();
+    final avatarUrl = metadata['avatar_url']?.toString();
+
+    final prefs = await SharedPreferences.getInstance();
+    final deviceId = DateTime.now().millisecondsSinceEpoch.toString();
+
+    await prefs.setString('session_email', email);
+    await prefs.setString('session_user_id', userId);
+    await prefs.setString('session_device_id', deviceId);
+    if (avatarUrl != null) {
+      await prefs.setString('session_avatar_url', avatarUrl);
+      UserNotifier.avatarUrl.value = avatarUrl;
+    }
+
+    // Check if user already exists in profiles table
+    bool isNewUser = true;
+    try {
+      final existingProfile = await fetchUserProfile(userId);
+      final hasCompletedLocal = prefs.getBool('onboarding_done_$userId') ?? false;
+
+      if (existingProfile != null &&
+          existingProfile['username'] != null &&
+          existingProfile['username'].toString().trim().isNotEmpty &&
+          hasCompletedLocal) {
+        final savedUsername = existingProfile['username'].toString().trim();
+        await prefs.setString('session_username', savedUsername);
+        UserNotifier.username.value = savedUsername;
+        isNewUser = false;
+      } else {
+        await prefs.setString('session_username', defaultUsername);
+        UserNotifier.username.value = defaultUsername;
+        isNewUser = true;
+      }
+    } catch (_) {
+      await prefs.setString('session_username', defaultUsername);
+      UserNotifier.username.value = defaultUsername;
+      isNewUser = true;
+    }
+
+    // If existing user, ensure device_id is updated in profiles
+    if (!isNewUser) {
+      try {
+        await http.post(
+          Uri.parse('$supabaseUrl/rest/v1/profiles'),
+          headers: {
+            'apikey': supabaseAnonKey,
+            'Authorization': 'Bearer $supabaseAnonKey',
+            'Content-Type': 'application/json',
+            'Prefer': 'resolution=merge-duplicates',
+          },
+          body: jsonEncode({
+            'id': userId,
+            'device_id': deviceId,
+          }),
+        );
+      } catch (_) {}
+    }
+
+    return isNewUser;
+  }
+
+  /// Complete Google new user profile setup with custom username
+  static Future<bool> completeGoogleOnboarding({
+    required String userId,
+    required String username,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final deviceId = prefs.getString('session_device_id') ?? DateTime.now().millisecondsSinceEpoch.toString();
+    final avatarUrl = prefs.getString('session_avatar_url');
+
+    final cleanUsername = username.trim().isNotEmpty ? username.trim() : 'Pengguna';
+    await prefs.setString('session_username', cleanUsername);
+    await prefs.setBool('onboarding_done_$userId', true);
+    UserNotifier.username.value = cleanUsername;
+
+    try {
+      final res = await http.post(
+        Uri.parse('$supabaseUrl/rest/v1/profiles'),
+        headers: {
+          'apikey': supabaseAnonKey,
+          'Authorization': 'Bearer $supabaseAnonKey',
+          'Content-Type': 'application/json',
+          'Prefer': 'resolution=merge-duplicates',
+        },
+        body: jsonEncode({
+          'id': userId,
+          'username': cleanUsername,
+          'device_id': deviceId,
+          if (avatarUrl != null) 'avatar_url': avatarUrl,
+        }),
+      );
+      return res.statusCode == 200 || res.statusCode == 201;
+    } catch (e) {
+      debugPrint('Error completing Google onboarding: $e');
+      return false;
+    }
+  }
 
   /// Authenticate user via Supabase Auth
   static Future<bool> login(String usernameOrEmail, String password) async {
@@ -144,6 +312,15 @@ class SupabaseService {
     await prefs.remove('session_username');
     await prefs.remove('session_avatar_url');
     await UserNotifier.clear();
+    try {
+      await PresenceService.instance.stopTracking();
+    } catch (_) {}
+    try {
+      await g_sign_in.GoogleSignIn.instance.signOut();
+    } catch (_) {}
+    try {
+      await Supabase.instance.client.auth.signOut();
+    } catch (_) {}
   }
 
   /// Ensure we have a valid userId, resolving from username, email, or device_id if needed
@@ -426,6 +603,27 @@ class SupabaseService {
   }
 
   /// Fetch user subscription expiry date
+  static Future<Map<String, dynamic>?> fetchAnnouncement() async {
+    try {
+      final response = await http.get(
+        Uri.parse('$supabaseUrl/rest/v1/app_settings?select=announcement_active,announcement_text,maintenance_mode&limit=1'),
+        headers: {
+          'apikey': supabaseAnonKey,
+          'Authorization': 'Bearer $supabaseAnonKey',
+        },
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data is List && data.isNotEmpty) {
+          return data[0] as Map<String, dynamic>;
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching announcement: $e');
+    }
+    return null;
+  }
+
   static Future<DateTime?> fetchExpiryDate() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -642,23 +840,80 @@ class SupabaseService {
     return const AccountsOverview();
   }
 
+  static const List<String> priorityCountries = [
+    'ID', 'SG', 'MY', 'PH', 'TH', 'IN', 'US'
+  ];
+  static const String priorityCountriesPostgrestIn = 'in.(ID,SG,MY,PH,TH,IN,US)';
+
+  /// Helper to build query filter parameters for Supabase REST API
+  static String buildFilterParams({
+    String? planName,
+    String? searchQuery,
+    String? regionFilter,
+    bool prioritizeNearby = true,
+  }) {
+    String params = '';
+
+    // Plan filter
+    if (planName != null &&
+        planName.isNotEmpty &&
+        planName != 'Semua' &&
+        planName != 'All') {
+      params += '&plan_name=ilike.*$planName*';
+    }
+
+    final trimmedSearch = searchQuery?.trim() ?? '';
+    final detectedCountry = trimmedSearch.isNotEmpty
+        ? CookieAccount.detectCountryCode(trimmedSearch)
+        : null;
+
+    if (detectedCountry != null) {
+      // User specifically searched for a country/region! Strictly filter by that country code
+      params += '&country=eq.$detectedCountry';
+    } else if (trimmedSearch.isNotEmpty) {
+      // General keyword search (email, filename, phone)
+      final q = Uri.encodeComponent(trimmedSearch);
+      params += '&or=(email.ilike.*$q*,filename.ilike.*$q*,phone.ilike.*$q*)';
+
+      if (regionFilter != null &&
+          regionFilter.isNotEmpty &&
+          regionFilter != 'Semua' &&
+          regionFilter != 'All') {
+        params += '&country=eq.$regionFilter';
+      }
+    } else {
+      if (regionFilter != null &&
+          regionFilter.isNotEmpty &&
+          regionFilter != 'Semua' &&
+          regionFilter != 'All') {
+        params += '&country=eq.$regionFilter';
+      }
+    }
+
+    return params;
+  }
+
   /// Fetch accounts filtered by specific plan (default 5 accounts per page)
   static Future<PagedAccountsResult> fetchAccountsByPlan(
     String planName, {
     int limit = 5,
     int offset = 0,
     String? searchQuery,
+    String? regionFilter,
+    bool prioritizeNearby = true,
   }) async {
     try {
+      final filter = buildFilterParams(
+        planName: planName,
+        searchQuery: searchQuery,
+        regionFilter: regionFilter,
+        prioritizeNearby: prioritizeNearby,
+      );
+
       String query =
-          '$supabaseUrl/rest/v1/cookie_accounts?select=*&plan_name=ilike.*$planName*&order=created_at.desc&limit=$limit&offset=$offset';
+          '$supabaseUrl/rest/v1/cookie_accounts?select=*&order=created_at.desc&limit=$limit&offset=$offset$filter';
 
-      if (searchQuery != null && searchQuery.trim().isNotEmpty) {
-        final q = Uri.encodeComponent(searchQuery.trim());
-        query += '&or=(email.ilike.*$q*,country.ilike.*$q*,filename.ilike.*$q*,phone.ilike.*$q*)';
-      }
-
-      final response = await http.get(
+      var response = await http.get(
         Uri.parse(query),
         headers: {
           'apikey': supabaseAnonKey,
@@ -667,21 +922,26 @@ class SupabaseService {
         },
       );
 
-      if (response.statusCode == 200 || response.statusCode == 206) {
-        int total = 0;
-        final contentRange = response.headers['content-range'];
-        if (contentRange != null && contentRange.contains('/')) {
-          final countPart = contentRange.split('/').last.trim();
-          total = int.tryParse(countPart) ?? 0;
-        }
-
-        final List<dynamic> list = jsonDecode(response.body);
-        final accounts =
-            list.map((json) => CookieAccount.fromJson(json)).toList();
-        if (total == 0) total = accounts.length;
-
-        return PagedAccountsResult(accounts: accounts, totalCount: total);
+      int total = 0;
+      final contentRange = response.headers['content-range'];
+      if (contentRange != null && contentRange.contains('/')) {
+        final countPart = contentRange.split('/').last.trim();
+        total = int.tryParse(countPart) ?? 0;
       }
+
+      List<CookieAccount> accounts = [];
+      if (response.statusCode == 200 || response.statusCode == 206) {
+        final List<dynamic> list = jsonDecode(response.body);
+        accounts = list.map((json) => CookieAccount.fromJson(json)).toList();
+        if (total == 0) total = accounts.length;
+      }
+
+      // Prioritize regional order: ID > SG > MY > PH > TH > IN > US > others
+
+      // Prioritize regional order: ID > SG > MY > PH > TH > IN > US > others
+      accounts.sort((a, b) => a.regionPriority.compareTo(b.regionPriority));
+
+      return PagedAccountsResult(accounts: accounts, totalCount: total);
     } catch (_) {}
     return const PagedAccountsResult(accounts: [], totalCount: 0);
   }
@@ -695,12 +955,13 @@ class SupabaseService {
     int mobileOffset = 0,
     int countPerPlan = 3,
     String? searchQuery,
+    String? regionFilter,
   }) async {
     final results = await Future.wait([
-      fetchAccountsByPlan('Premium', limit: countPerPlan, offset: premiumOffset, searchQuery: searchQuery),
-      fetchAccountsByPlan('Standard', limit: countPerPlan, offset: standardOffset, searchQuery: searchQuery),
-      fetchAccountsByPlan('Basic', limit: countPerPlan, offset: basicOffset, searchQuery: searchQuery),
-      fetchAccountsByPlan('Mobile', limit: countPerPlan, offset: mobileOffset, searchQuery: searchQuery),
+      fetchAccountsByPlan('Premium', limit: countPerPlan, offset: premiumOffset, searchQuery: searchQuery, regionFilter: regionFilter),
+      fetchAccountsByPlan('Standard', limit: countPerPlan, offset: standardOffset, searchQuery: searchQuery, regionFilter: regionFilter),
+      fetchAccountsByPlan('Basic', limit: countPerPlan, offset: basicOffset, searchQuery: searchQuery, regionFilter: regionFilter),
+      fetchAccountsByPlan('Mobile', limit: countPerPlan, offset: mobileOffset, searchQuery: searchQuery, regionFilter: regionFilter),
     ]);
 
     final premRes = results[0];
@@ -714,6 +975,9 @@ class SupabaseService {
       ...bscRes.accounts,
       ...mobRes.accounts,
     ];
+
+    // Priority sort: ID, SG, MY, PH, TH, IN, US first
+    combined.sort((a, b) => a.regionPriority.compareTo(b.regionPriority));
 
     final total = premRes.totalCount + stdRes.totalCount + bscRes.totalCount + mobRes.totalCount;
 
@@ -735,23 +999,21 @@ class SupabaseService {
     int offset = 0,
     String? planFilter,
     String? searchQuery,
+    String? regionFilter,
+    bool prioritizeNearby = true,
   }) async {
     try {
-      String query = '$supabaseUrl/rest/v1/cookie_accounts?select=*&order=created_at.desc&limit=$limit&offset=$offset';
+      final filter = buildFilterParams(
+        planName: planFilter,
+        searchQuery: searchQuery,
+        regionFilter: regionFilter,
+        prioritizeNearby: prioritizeNearby,
+      );
 
-      if (planFilter != null &&
-          planFilter.isNotEmpty &&
-          planFilter != 'Semua' &&
-          planFilter != 'All') {
-        query += '&plan_name=ilike.*$planFilter*';
-      }
+      String query =
+          '$supabaseUrl/rest/v1/cookie_accounts?select=*&order=created_at.desc&limit=$limit&offset=$offset$filter';
 
-      if (searchQuery != null && searchQuery.trim().isNotEmpty) {
-        final q = Uri.encodeComponent(searchQuery.trim());
-        query += '&or=(email.ilike.*$q*,country.ilike.*$q*,filename.ilike.*$q*,phone.ilike.*$q*)';
-      }
-
-      final response = await http.get(
+      var response = await http.get(
         Uri.parse(query),
         headers: {
           'apikey': supabaseAnonKey,
@@ -760,37 +1022,40 @@ class SupabaseService {
         },
       );
 
-      if (response.statusCode == 200 || response.statusCode == 206) {
-        int total = 0;
-        final contentRange = response.headers['content-range'];
-        if (contentRange != null && contentRange.contains('/')) {
-          final countPart = contentRange.split('/').last.trim();
-          total = int.tryParse(countPart) ?? 0;
-        }
-
-        final List<dynamic> list = jsonDecode(response.body);
-        final accounts =
-            list.map((json) => CookieAccount.fromJson(json)).toList();
-        if (total == 0) total = accounts.length;
-
-        return PagedAccountsResult(accounts: accounts, totalCount: total);
-      } else {
-        return const PagedAccountsResult(accounts: [], totalCount: 0);
+      int total = 0;
+      final contentRange = response.headers['content-range'];
+      if (contentRange != null && contentRange.contains('/')) {
+        final countPart = contentRange.split('/').last.trim();
+        total = int.tryParse(countPart) ?? 0;
       }
-    } catch (e) {
+
+      List<CookieAccount> accounts = [];
+      if (response.statusCode == 200 || response.statusCode == 206) {
+        final List<dynamic> list = jsonDecode(response.body);
+        accounts = list.map((json) => CookieAccount.fromJson(json)).toList();
+        if (total == 0) total = accounts.length;
+      }
+
+      accounts.sort((a, b) => a.regionPriority.compareTo(b.regionPriority));
+
+      return PagedAccountsResult(accounts: accounts, totalCount: total);
+    } catch (_) {
       return const PagedAccountsResult(accounts: [], totalCount: 0);
     }
   }
 
-  /// Fetch counts for all plan categories simultaneously, taking search query into account
-  static Future<Map<String, int>> fetchAllPlanCounts({String? searchQuery}) async {
+  /// Fetch counts for all plan categories simultaneously, taking search query and region into account
+  static Future<Map<String, int>> fetchAllPlanCounts({
+    String? searchQuery,
+    String? regionFilter,
+  }) async {
     try {
       final results = await Future.wait([
-        _fetchSinglePlanCount(null, searchQuery: searchQuery),
-        _fetchSinglePlanCount('Premium', searchQuery: searchQuery),
-        _fetchSinglePlanCount('Standard', searchQuery: searchQuery),
-        _fetchSinglePlanCount('Basic', searchQuery: searchQuery),
-        _fetchSinglePlanCount('Mobile', searchQuery: searchQuery),
+        _fetchSinglePlanCount(null, searchQuery: searchQuery, regionFilter: regionFilter),
+        _fetchSinglePlanCount('Premium', searchQuery: searchQuery, regionFilter: regionFilter),
+        _fetchSinglePlanCount('Standard', searchQuery: searchQuery, regionFilter: regionFilter),
+        _fetchSinglePlanCount('Basic', searchQuery: searchQuery, regionFilter: regionFilter),
+        _fetchSinglePlanCount('Mobile', searchQuery: searchQuery, regionFilter: regionFilter),
       ]);
 
       return {
@@ -811,16 +1076,20 @@ class SupabaseService {
     }
   }
 
-  static Future<int> _fetchSinglePlanCount(String? planName, {String? searchQuery}) async {
+  static Future<int> _fetchSinglePlanCount(
+    String? planName, {
+    String? searchQuery,
+    String? regionFilter,
+  }) async {
     try {
-      String query = '$supabaseUrl/rest/v1/cookie_accounts?select=id&limit=0';
-      if (planName != null && planName.isNotEmpty && planName != 'Semua' && planName != 'All') {
-        query += '&plan_name=ilike.*$planName*';
-      }
-      if (searchQuery != null && searchQuery.trim().isNotEmpty) {
-        final q = Uri.encodeComponent(searchQuery.trim());
-        query += '&or=(email.ilike.*$q*,country.ilike.*$q*,filename.ilike.*$q*,phone.ilike.*$q*)';
-      }
+      final filter = buildFilterParams(
+        planName: planName,
+        searchQuery: searchQuery,
+        regionFilter: regionFilter,
+        prioritizeNearby: false,
+      );
+
+      final query = '$supabaseUrl/rest/v1/cookie_accounts?select=id&limit=0$filter';
 
       final response = await http.get(
         Uri.parse(query),
@@ -869,6 +1138,7 @@ class SupabaseService {
           break;
         }
       }
+      allAccounts.sort((a, b) => a.regionPriority.compareTo(b.regionPriority));
       return allAccounts;
     } catch (e) {
       print('Fetch error: $e');

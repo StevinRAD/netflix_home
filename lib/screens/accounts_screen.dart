@@ -32,6 +32,18 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
   bool _isLoadingMore = false;
   String _searchQuery = '';
   String _selectedPlan = 'Semua';
+  String _selectedRegion = 'Semua';
+
+  static const List<Map<String, String>> _availableRegions = [
+    {'code': 'Semua', 'label': 'Semua Region 🌐'},
+    {'code': 'ID', 'label': '🇮🇩 ID (Indonesia)'},
+    {'code': 'SG', 'label': '🇸🇬 SG (Singapura)'},
+    {'code': 'MY', 'label': '🇲🇾 MY (Malaysia)'},
+    {'code': 'PH', 'label': '🇵🇭 PH (Filipina)'},
+    {'code': 'TH', 'label': '🇹🇭 TH (Thailand)'},
+    {'code': 'IN', 'label': '🇮🇳 IN (India)'},
+    {'code': 'US', 'label': '🇺🇸 US (United States)'},
+  ];
 
   final TextEditingController _searchController = TextEditingController();
   Timer? _searchDebounce;
@@ -67,15 +79,23 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
   late AnimationController _headerAnimController;
   late Animation<double> _headerFadeAnim;
 
+  bool get _isPermanent {
+    if (_accessExpiryDate == null) return false;
+    return _accessExpiryDate!.year > 2090;
+  }
+
   bool get _isAccessExpired {
     if (_accessExpiryDate == null) return true;
+    if (_isPermanent) return false;
     return DateTime.now().isAfter(_accessExpiryDate!);
   }
 
   int get _remainingDays {
     if (_accessExpiryDate == null) return 0;
-    final diff = _accessExpiryDate!.difference(DateTime.now()).inDays;
-    return diff < 0 ? 0 : diff;
+    if (_isAccessExpired) return 0;
+    final diff = _accessExpiryDate!.difference(DateTime.now());
+    final days = diff.inDays + (diff.inHours % 24 > 0 ? 1 : 0);
+    return days < 0 ? 0 : days;
   }
 
   @override
@@ -141,10 +161,11 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     try {
       final isAll = _selectedPlan == 'Semua' || _selectedPlan == 'All';
       final hasSearch = _searchQuery.trim().isNotEmpty;
+      final activeRegion = _selectedRegion == 'Semua' ? null : _selectedRegion;
 
       if (isAll) {
-        if (!hasSearch) {
-          // Normal balanced mode (3 per plan = ~12 accounts)
+        if (!hasSearch && activeRegion == null) {
+          // Normal balanced mode (3 per plan = ~12 accounts) prioritizing nearby regions
           final result = await SupabaseService.fetchBalancedAccounts(
             basicOffset: _basicOffset,
             standardOffset: _standardOffset,
@@ -152,6 +173,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
             mobileOffset: _mobileOffset,
             countPerPlan: _semuaCountPerPlan,
             searchQuery: null,
+            regionFilter: null,
           );
 
           if (mounted) {
@@ -166,15 +188,45 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
               _isLoadingMore = false;
             });
           }
+        } else if (!hasSearch && activeRegion != null) {
+          // Specific region selected in Semua mode: balanced across plans for that region
+          final result = await SupabaseService.fetchBalancedAccounts(
+            basicOffset: _basicOffset,
+            standardOffset: _standardOffset,
+            premiumOffset: _premiumOffset,
+            mobileOffset: _mobileOffset,
+            countPerPlan: _semuaCountPerPlan,
+            searchQuery: null,
+            regionFilter: activeRegion,
+          );
+
+          final counts = await SupabaseService.fetchAllPlanCounts(
+            searchQuery: null,
+            regionFilter: activeRegion,
+          );
+
+          if (mounted) {
+            setState(() {
+              _accounts = result.accounts;
+              _totalAccountsCount = counts['Semua'] ?? result.totalCount;
+              _planTotals = counts;
+              _isLoading = false;
+              _isLoadingMore = false;
+            });
+          }
         } else {
-          // Search mode on Semua: query paged accounts matching search + synchronize all chip counts
+          // Search mode on Semua: query paged accounts matching search/region + synchronize all chip counts
           final futures = await Future.wait([
             SupabaseService.fetchCookieAccountsPaged(
               limit: 10,
               offset: _currentPlanOffset,
               searchQuery: _searchQuery,
+              regionFilter: activeRegion,
             ),
-            SupabaseService.fetchAllPlanCounts(searchQuery: _searchQuery),
+            SupabaseService.fetchAllPlanCounts(
+              searchQuery: _searchQuery,
+              regionFilter: activeRegion,
+            ),
           ]);
 
           final pagedResult = futures[0] as PagedAccountsResult;
@@ -191,15 +243,19 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
           }
         }
       } else {
-        // Specific plan: fetch 5 accounts of this plan + synchronize all chip counts with search query
+        // Specific plan: fetch accounts of this plan + synchronize chip counts
         final futures = await Future.wait([
           SupabaseService.fetchAccountsByPlan(
             _selectedPlan,
             limit: _planPageSize,
             offset: _currentPlanOffset,
             searchQuery: _searchQuery,
+            regionFilter: activeRegion,
           ),
-          SupabaseService.fetchAllPlanCounts(searchQuery: _searchQuery),
+          SupabaseService.fetchAllPlanCounts(
+            searchQuery: _searchQuery,
+            regionFilter: activeRegion,
+          ),
         ]);
 
         final planResult = futures[0] as PagedAccountsResult;
@@ -292,6 +348,19 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     if (_selectedPlan == plan) return;
     setState(() {
       _selectedPlan = plan;
+      _currentPlanOffset = 0;
+      _basicOffset = 0;
+      _standardOffset = 0;
+      _premiumOffset = 0;
+      _mobileOffset = 0;
+    });
+    _loadAccounts();
+  }
+
+  void _onSelectRegion(String regionCode) {
+    if (_selectedRegion == regionCode) return;
+    setState(() {
+      _selectedRegion = regionCode;
       _currentPlanOffset = 0;
       _basicOffset = 0;
       _standardOffset = 0;
@@ -510,12 +579,15 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
       final totalForPlan = _planTotals[normalizedPlan] ?? 50;
       offset = offset % math.max(1, totalForPlan);
 
+      final activeRegion = _selectedRegion == 'Semua' ? null : _selectedRegion;
+
       // Fetch up to 3 candidates to avoid picking any account already on screen
       final result = await SupabaseService.fetchAccountsByPlan(
         normalizedPlan,
         limit: 3,
         offset: offset,
         searchQuery: _searchQuery,
+        regionFilter: activeRegion,
       );
 
       CookieAccount? replacement;
@@ -535,6 +607,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
           limit: 3,
           offset: offset,
           searchQuery: _searchQuery,
+          regionFilter: activeRegion,
         );
         for (final candidate in fallbackResult.accounts) {
           if (!existingIds.contains(candidate.id)) {
@@ -866,7 +939,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                       _buildInfoTile(
                         Icons.public,
                         LanguageNotifier.isIndonesian.value ? 'Wilayah / Negara' : 'Region / Country',
-                        acc.country,
+                        acc.formattedCountry,
                         Colors.teal,
                       ),
                       _buildInfoTile(
@@ -1087,6 +1160,118 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // ─── UNIFIED VIDEO TUTORIAL SHORTS CARD ───
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1F1F32) : const Color(0xFFFFF5F5),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: const Color(0xFFE50914).withValues(alpha: 0.3),
+                            width: 1,
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.smart_display_rounded, size: 18, color: Color(0xFFE50914)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    LanguageNotifier.isIndonesian.value
+                                        ? 'Video Tutorial Pemakaian Netflix Home'
+                                        : 'Netflix Home Video Tutorials',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: isDark ? Colors.white : Colors.black87,
+                                    ),
+                                    maxLines: 2,
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () {
+                                    Navigator.pop(ctx);
+                                    LoginHelpModal.show(context);
+                                  },
+                                  style: TextButton.styleFrom(
+                                    padding: EdgeInsets.zero,
+                                    minimumSize: Size.zero,
+                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                  ),
+                                  child: Text(
+                                    LanguageNotifier.isIndonesian.value ? 'Panduan FAQ' : 'FAQ Guide',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: const Color(0xFFE50914),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: _buildTutorialChip(
+                                    icon: Icons.smartphone_rounded,
+                                    label: 'Shorts HP',
+                                    color: const Color(0xFF4CAF50),
+                                    onTap: () {
+                                      VideoTutorialModal.show(
+                                        context,
+                                        videoUrl: 'https://youtube.com/shorts/NUKerEzq7pA',
+                                        title: LanguageNotifier.isIndonesian.value
+                                            ? 'Tutorial Login HP'
+                                            : 'Phone Login Tutorial',
+                                      );
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: _buildTutorialChip(
+                                    icon: Icons.laptop_mac_rounded,
+                                    label: 'Shorts PC',
+                                    color: const Color(0xFF2196F3),
+                                    onTap: () {
+                                      VideoTutorialModal.show(
+                                        context,
+                                        videoUrl: 'https://youtube.com/shorts/LeNsXxqqrps',
+                                        title: LanguageNotifier.isIndonesian.value
+                                            ? 'Tutorial Login PC'
+                                            : 'PC Login Tutorial',
+                                      );
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: _buildTutorialChip(
+                                    icon: Icons.tv_rounded,
+                                    label: 'Shorts TV',
+                                    color: const Color(0xFFFF9800),
+                                    onTap: () {
+                                      VideoTutorialModal.show(
+                                        context,
+                                        videoUrl: 'https://youtube.com/shorts/xq4TDRb0hR0',
+                                        title: LanguageNotifier.isIndonesian.value
+                                            ? 'Tutorial Login TV'
+                                            : 'TV Login Tutorial',
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      
                       // Account info mini
                       Container(
                         padding: const EdgeInsets.all(12),
@@ -1297,110 +1482,6 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                         },
                       ),
 
-                      const SizedBox(height: 14),
-
-                      // ─── UNIFIED VIDEO TUTORIAL SHORTS CARD ───
-                      Container(
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: isDark ? const Color(0xFF1F1F32) : const Color(0xFFFFF5F5),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                            color: const Color(0xFFE50914).withValues(alpha: 0.3),
-                            width: 1,
-                          ),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Icon(Icons.smart_display_rounded, size: 18, color: Color(0xFFE50914)),
-                                const SizedBox(width: 8),
-                                Text(
-                                  LanguageNotifier.isIndonesian.value
-                                      ? 'Video Tutorial Shorts'
-                                      : 'Shorts Video Tutorials',
-                                  style: GoogleFonts.inter(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                    color: isDark ? Colors.white : Colors.black87,
-                                  ),
-                                ),
-                                const Spacer(),
-                                TextButton(
-                                  onPressed: () {
-                                    Navigator.pop(ctx);
-                                    LoginHelpModal.show(context);
-                                  },
-                                  style: TextButton.styleFrom(
-                                    padding: EdgeInsets.zero,
-                                    minimumSize: Size.zero,
-                                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                  ),
-                                  child: Text(
-                                    LanguageNotifier.isIndonesian.value ? 'Panduan FAQ' : 'FAQ Guide',
-                                    style: GoogleFonts.inter(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                      color: const Color(0xFFE50914),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 10),
-                            Row(
-                              children: [
-                                _buildTutorialChip(
-                                  icon: Icons.smartphone_rounded,
-                                  label: 'Shorts HP',
-                                  color: const Color(0xFF4CAF50),
-                                  onTap: () {
-                                    VideoTutorialModal.show(
-                                      context,
-                                      videoUrl: 'https://youtube.com/shorts/NUKerEzq7pA',
-                                      title: LanguageNotifier.isIndonesian.value
-                                          ? 'Tutorial Login HP'
-                                          : 'Phone Login Tutorial',
-                                    );
-                                  },
-                                ),
-                                const SizedBox(width: 6),
-                                _buildTutorialChip(
-                                  icon: Icons.laptop_mac_rounded,
-                                  label: 'Shorts PC',
-                                  color: const Color(0xFF2196F3),
-                                  onTap: () {
-                                    VideoTutorialModal.show(
-                                      context,
-                                      videoUrl: 'https://youtube.com/shorts/LeNsXxqqrps',
-                                      title: LanguageNotifier.isIndonesian.value
-                                          ? 'Tutorial Login PC'
-                                          : 'PC Login Tutorial',
-                                    );
-                                  },
-                                ),
-                                const SizedBox(width: 6),
-                                _buildTutorialChip(
-                                  icon: Icons.tv_rounded,
-                                  label: 'Shorts TV',
-                                  color: const Color(0xFFFF9800),
-                                  onTap: () {
-                                    VideoTutorialModal.show(
-                                      context,
-                                      videoUrl: 'https://youtube.com/shorts/xq4TDRb0hR0',
-                                      title: LanguageNotifier.isIndonesian.value
-                                          ? 'Tutorial Login TV'
-                                          : 'TV Login Tutorial',
-                                    );
-                                  },
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
 
                       const SizedBox(height: 6),
                       SizedBox(
@@ -1600,7 +1681,17 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     return Icons.movie;
   }
 
-  List<CookieAccount> get _filteredAccounts => _accounts;
+  List<CookieAccount> get _filteredAccounts {
+    var list = _accounts;
+    if (_selectedRegion != 'Semua' && _selectedRegion.isNotEmpty) {
+      list = list.where((acc) => acc.countryCode == _selectedRegion).toList();
+    }
+    final detected = CookieAccount.detectCountryCode(_searchQuery);
+    if (detected != null) {
+      list = list.where((acc) => acc.countryCode == detected).toList();
+    }
+    return list;
+  }
 
   int _getCountForPlan(String plan) {
     if (plan == 'Semua' || plan == 'All') {
@@ -1898,6 +1989,57 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                                         ),
                                       ],
                                     ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+
+                  // Region Filter Chips (Prioritize & Filter by Country)
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                    child: Row(
+                      children: _availableRegions.map((region) {
+                        final code = region['code']!;
+                        final label = region['label']!;
+                        final isSelected = _selectedRegion == code;
+
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () => _onSelectRegion(code),
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 200),
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? (isDark ? const Color(0xFF2E3856) : const Color(0xFFE2E8F0))
+                                      : (isDark ? Colors.white.withValues(alpha: 0.04) : Colors.black.withValues(alpha: 0.03)),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: isSelected
+                                        ? const Color(0xFFE50914)
+                                        : (isDark ? Colors.white.withValues(alpha: 0.08) : Colors.black.withValues(alpha: 0.08)),
+                                    width: isSelected ? 1.5 : 1.0,
+                                  ),
+                                ),
+                                child: Text(
+                                  label,
+                                  style: GoogleFonts.inter(
+                                    fontSize: 11,
+                                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                                    color: isSelected
+                                        ? (isDark ? Colors.white : const Color(0xFF0F172A))
+                                        : (isDark ? Colors.grey[400] : Colors.grey[600]),
                                   ),
                                 ),
                               ),
@@ -2292,7 +2434,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                                 Icon(Icons.public, size: 12, color: Colors.grey[400]),
                                 const SizedBox(width: 4),
                                 Text(
-                                  acc.country,
+                                  acc.formattedCountry,
                                   style: GoogleFonts.inter(fontSize: 11, color: Colors.grey[500]),
                                 ),
                                 const SizedBox(width: 8),

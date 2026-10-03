@@ -45,10 +45,157 @@ class CookieAccount {
         .trim();
   }
 
+  static final Map<String, String> countryNames = {
+    'ID': 'Indonesia 🇮🇩',
+    'SG': 'Singapura 🇸🇬',
+    'MY': 'Malaysia 🇲🇾',
+    'PH': 'Filipina 🇵🇭',
+    'TH': 'Thailand 🇹🇭',
+    'IN': 'India 🇮🇳',
+    'US': 'United States 🇺🇸',
+    'GB': 'Inggris 🇬🇧',
+    'AU': 'Australia 🇦🇺',
+    'JP': 'Jepang 🇯🇵',
+    'KR': 'Korea 🇰🇷',
+    'BR': 'Brasil 🇧🇷',
+    'AR': 'Argentina 🇦🇷',
+    'TR': 'Turki 🇹🇷',
+    'DE': 'Jerman 🇩🇪',
+    'FR': 'Prancis 🇫🇷',
+    'IT': 'Italia 🇮🇹',
+    'ES': 'Spanyol 🇪🇸',
+    'CA': 'Kanada 🇨🇦',
+    'VN': 'Vietnam 🇻🇳',
+  };
+
+  static final Map<String, String> countryKeywords = {
+    'ID': 'ID',
+    'INDONESIA': 'ID',
+    'INDO': 'ID',
+    'IDN': 'ID',
+    'SG': 'SG',
+    'SINGAPORE': 'SG',
+    'SINGAPURA': 'SG',
+    'SGP': 'SG',
+    'MY': 'MY',
+    'MALAYSIA': 'MY',
+    'MYS': 'MY',
+    'IN': 'IN',
+    'INDIA': 'IN',
+    'IND': 'IN',
+    'HINDI': 'IN',
+    'US': 'US',
+    'USA': 'US',
+    'AMERIKA': 'US',
+    'UNITED STATES': 'US',
+    'PH': 'PH',
+    'PHILIPPINES': 'PH',
+    'FILIPINA': 'PH',
+    'PHL': 'PH',
+    'TH': 'TH',
+    'THAILAND': 'TH',
+    'AU': 'AU',
+    'AUSTRALIA': 'AU',
+    'AUS': 'AU',
+    'GB': 'GB',
+    'UK': 'GB',
+    'INGGRIS': 'GB',
+    'ENGLAND': 'GB',
+    'BR': 'BR',
+    'BRAZIL': 'BR',
+    'BRASIL': 'BR',
+    'AR': 'AR',
+    'ARGENTINA': 'AR',
+    'TR': 'TR',
+    'TURKI': 'TR',
+    'TURKEY': 'TR',
+    'TURKIYE': 'TR',
+    'JP': 'JP',
+    'JAPAN': 'JP',
+    'JEPANG': 'JP',
+    'KR': 'KR',
+    'KOREA': 'KR',
+    'DE': 'DE',
+    'GERMANY': 'DE',
+    'JERMAN': 'DE',
+    'FR': 'FR',
+    'FRANCE': 'FR',
+    'PRANCIS': 'FR',
+    'IT': 'IT',
+    'ITALY': 'IT',
+    'ITALIA': 'IT',
+    'ES': 'ES',
+    'SPAIN': 'ES',
+    'SPANYOL': 'ES',
+    'CA': 'CA',
+    'CANADA': 'CA',
+    'KANADA': 'CA',
+    'VN': 'VN',
+    'VIETNAM': 'VN',
+    'RU': 'RU',
+    'RUSSIA': 'RU',
+    'RUSIA': 'RU',
+    'MX': 'MX',
+    'MEXICO': 'MX',
+    'MEKSIKO': 'MX',
+  };
+
+  static String? detectCountryCode(String input) {
+    final clean = input.trim();
+    if (clean.isEmpty) return null;
+    // If input contains @ or . or is a URL, it's an email or link, not a country search
+    if (clean.contains('@') || clean.contains('.') || clean.toLowerCase().startsWith('http')) {
+      return null;
+    }
+    final upper = clean.toUpperCase();
+    if (countryKeywords.containsKey(upper)) {
+      return countryKeywords[upper];
+    }
+    return null;
+  }
+
+  static String formatCountry(String raw) {
+    final clean = raw.trim();
+    if (clean.isEmpty) return 'Indonesia 🇮🇩';
+    final upper = clean.toUpperCase();
+    if (countryNames.containsKey(upper)) {
+      return countryNames[upper]!;
+    }
+    return clean;
+  }
+
+  String get formattedCountry => formatCountry(country);
+
+  String get countryCode {
+    final clean = country.trim().toUpperCase();
+    if (clean.length == 2 && countryNames.containsKey(clean)) return clean;
+    for (final entry in countryKeywords.entries) {
+      if (clean == entry.key || clean.contains(entry.key)) {
+        return entry.value;
+      }
+    }
+    return clean.length >= 2 ? clean.substring(0, 2) : clean;
+  }
+
+  /// Priority score: Lower means higher priority in the account list
+  int get regionPriority {
+    final code = countryCode;
+    switch (code) {
+      case 'ID': return 0; // Top 1: Indonesia
+      case 'SG': return 1; // Top 2: Singapore
+      case 'MY': return 2; // Top 3: Malaysia
+      case 'PH': return 3; // Top 4: Philippines
+      case 'TH': return 4; // Top 5: Thailand
+      case 'IN': return 5; // Top 6: India
+      case 'US': return 6; // Top 7: USA
+      default: return 99; // Other countries
+    }
+  }
+
   factory CookieAccount.fromRawText(String rawText, {String id = '1', String filename = 'Akun Valid Elloe'}) {
     String email = 'Unknown';
     String phone = 'Unknown';
-    String country = 'Indonesia 🇮🇩';
+    String country = 'ID';
     String planName = 'Basic';
     String videoQuality = '720p HD';
     int maxStreams = 1;
@@ -76,11 +223,7 @@ class CookieAccount {
               phone = val;
               break;
             case 'country':
-              if (val.toUpperCase() == 'ID') {
-                country = 'Indonesia 🇮🇩';
-              } else {
-                country = val;
-              }
+              country = val.trim().toUpperCase();
               break;
             case 'plan':
               planName = val;
@@ -133,7 +276,7 @@ class CookieAccount {
       cookieContent: json['cookie_content'] ?? json['content'] ?? '',
       email: _cleanUtf8(json['email'] ?? 'Unknown'),
       phone: _cleanUtf8(json['phone'] ?? 'Unknown'),
-      country: _cleanUtf8(json['country'] ?? 'Indonesia 🇮🇩'),
+      country: _cleanUtf8(json['country'] ?? 'ID'),
       planName: _cleanUtf8(json['plan_name'] ?? 'Premium'),
       videoQuality: _cleanUtf8(json['video_quality'] ?? '4K + HDR'),
       maxStreams: json['max_streams'] != null ? int.tryParse(json['max_streams'].toString()) ?? 4 : 4,

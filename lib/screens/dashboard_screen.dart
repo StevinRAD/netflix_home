@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:showcaseview/showcaseview.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:async';
 import 'dart:math' as math;
 import '../services/supabase_service.dart';
@@ -36,15 +37,23 @@ class _DashboardScreenState extends State<DashboardScreen>
   // ignore: unused_field
   bool _isLoadingExpiry = true;
 
+  bool get _isPermanent {
+    if (_accessExpiryDate == null) return false;
+    return _accessExpiryDate!.year > 2090;
+  }
+
   bool get _isAccessExpired {
     if (_accessExpiryDate == null) return true;
+    if (_isPermanent) return false;
     return DateTime.now().isAfter(_accessExpiryDate!);
   }
 
   int get _remainingDays {
     if (_accessExpiryDate == null) return 0;
     if (_isAccessExpired) return 0;
-    return _accessExpiryDate!.difference(DateTime.now()).inDays + 1;
+    final diff = _accessExpiryDate!.difference(DateTime.now());
+    final days = diff.inDays + (diff.inHours % 24 > 0 ? 1 : 0);
+    return days < 0 ? 0 : days;
   }
 
   String _getIndonesianMonth(int month) {
@@ -95,6 +104,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     SupabaseService.fetchUserProfile();
     _startTimer();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkAnnouncement();
       _checkFirstTimeGuide();
       UpdateService.checkForUpdate(context);
     });
@@ -163,8 +173,181 @@ class _DashboardScreenState extends State<DashboardScreen>
 
     // Setelah guide selesai (atau jika sudah pernah ditampilkan), jalankan showcase
     if (mounted) {
-      _checkShowcase();
+      await _checkShowcase();
+      _checkChangelog();
     }
+  }
+
+  Future<void> _checkChangelog() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      PackageInfo packageInfo = await PackageInfo.fromPlatform();
+      String currentVersion = packageInfo.version;
+      String? lastSeenVersion = prefs.getString('last_seen_version');
+
+      if (lastSeenVersion == null) {
+        // Pengguna baru, tidak perlu menampilkan changelog tapi simpan versinya
+        await prefs.setString('last_seen_version', currentVersion);
+      } else if (lastSeenVersion != currentVersion) {
+        // Versi telah diperbarui!
+        await prefs.setString('last_seen_version', currentVersion);
+        if (mounted) {
+          _showChangelogDialog(currentVersion);
+        }
+      }
+    } catch (e) {
+      debugPrint('Error checking changelog: $e');
+    }
+  }
+
+  void _showChangelogDialog(String version) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE50914).withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.celebration_rounded, color: Color(0xFFE50914), size: 40),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Pembaruan Berhasil!',
+                  style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Aplikasi Anda telah diperbarui ke versi $version',
+                  style: GoogleFonts.inter(fontSize: 14, color: Colors.grey),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF252530) : const Color(0xFFF8F9FA),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Apa yang baru:', style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 14)),
+                      const SizedBox(height: 8),
+                      Text('• UI Dashboard dan Profil diperbarui\n• Penyesuaian masa aktif paket (Permanen, Berwaktu, & Belum Aktif)\n• Posisi Video Tutorial Shorts ditingkatkan\n• Sistem notifikasi dari Admin ditambahkan', style: GoogleFonts.inter(fontSize: 13, color: isDark ? Colors.white70 : Colors.black87, height: 1.5)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFE50914),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text('Tutup', style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 16)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _checkAnnouncement() async {
+    final announcement = await SupabaseService.fetchAnnouncement();
+    if (announcement != null && mounted) {
+      bool isActive = announcement['announcement_active'] == true;
+      String text = announcement['announcement_text'] ?? '';
+      bool isMaintenance = announcement['maintenance_mode'] == true;
+      
+      if (isActive || isMaintenance) {
+        _showAnnouncementDialog(text, isMaintenance);
+      }
+    }
+  }
+
+  void _showAnnouncementDialog(String message, bool isMaintenance) {
+    showDialog(
+      context: context,
+      barrierDismissible: !isMaintenance,
+      builder: (context) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+              borderRadius: BorderRadius.circular(20),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: isMaintenance ? const Color(0xFFE50914).withValues(alpha: 0.1) : const Color(0xFF2196F3).withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    isMaintenance ? Icons.engineering_rounded : Icons.info_outline_rounded,
+                    color: isMaintenance ? const Color(0xFFE50914) : const Color(0xFF2196F3),
+                    size: 40,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  isMaintenance ? 'Sedang Maintenance' : 'Pemberitahuan Admin',
+                  style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.bold, color: isMaintenance ? const Color(0xFFE50914) : (isDark ? Colors.white : Colors.black87)),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  message.isEmpty ? (isMaintenance ? 'Sistem sedang dalam perbaikan. Mohon coba lagi nanti.' : 'Ada pesan dari Admin') : message,
+                  style: GoogleFonts.inter(fontSize: 14, color: isDark ? Colors.white70 : Colors.black87, height: 1.5),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                if (!isMaintenance)
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFE50914),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      child: Text('Mengerti', style: GoogleFonts.inter(fontWeight: FontWeight.bold, fontSize: 16)),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _checkShowcase() async {
@@ -330,6 +513,12 @@ class _DashboardScreenState extends State<DashboardScreen>
           ? 'Paket Habis'
           : 'Package Expired';
     }
+    
+    if (_isPermanent) {
+      return LanguageNotifier.isIndonesian.value
+          ? 'Masa Aktif: Permanen'
+          : 'Active: Permanent';
+    }
 
     final diff = _accessExpiryDate!.difference(DateTime.now());
 
@@ -350,6 +539,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   double get _expiryProgress {
     if (_accessExpiryDate == null || _isAccessExpired) return 0.0;
+    if (_isPermanent) return 1.0;
     final diff = _accessExpiryDate!.difference(DateTime.now());
     return (diff.inDays / 30.0).clamp(0.0, 1.0);
   }
@@ -1002,9 +1192,11 @@ class _DashboardScreenState extends State<DashboardScreen>
   //  SUBSCRIPTION STATUS CARD
   // ═══════════════════════════════════════════════════════════════
   Widget _buildSubscriptionCard(bool isDark) {
-    final expiryFormatted = _accessExpiryDate != null
-        ? '${_accessExpiryDate!.day} ${_getIndonesianMonth(_accessExpiryDate!.month)} ${_accessExpiryDate!.year}'
-        : '-';
+    final expiryFormatted = _isPermanent
+        ? (LanguageNotifier.isIndonesian.value ? 'Berlaku Selamanya' : 'Lifetime Access')
+        : (_accessExpiryDate != null
+            ? '${_accessExpiryDate!.day} ${_getIndonesianMonth(_accessExpiryDate!.month)} ${_accessExpiryDate!.year}'
+            : '-');
 
     return Container(
       margin: const EdgeInsets.all(16),
@@ -1068,8 +1260,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                     ),
                     Text(
                       LanguageNotifier.isIndonesian.value
-                          ? 'Berlaku s/d: $expiryFormatted'
-                          : 'Valid until: $expiryFormatted',
+                          ? (_isPermanent ? 'Masa Aktif: $expiryFormatted' : 'Berlaku s/d: $expiryFormatted')
+                          : (_isPermanent ? 'Active: $expiryFormatted' : 'Valid until: $expiryFormatted'),
                       style: GoogleFonts.inter(
                         fontSize: 11,
                         color: Colors.grey,
