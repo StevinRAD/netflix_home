@@ -8,6 +8,7 @@ import 'dart:async';
 import '../models/account_model.dart';
 import '../services/nftoken_service.dart';
 import '../services/supabase_service.dart';
+import '../services/account_validator_service.dart';
 import '../utils/language_notifier.dart';
 import 'login_help_modal.dart';
 import '../widgets/video_tutorial_modal.dart';
@@ -72,6 +73,8 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
   // Cached tokens and in-progress checking state
   final Map<String, NFTokenResult> _accountTokens = {};
   final Set<String> _checkingAccountIds = {};
+  final ValueNotifier<String> _loadingMessage = ValueNotifier('');
+  final ValueNotifier<int> _loadingStep = ValueNotifier<int>(0);
 
   DateTime? _accessExpiryDate;
   bool _isLoadingExpiry = true;
@@ -120,6 +123,8 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     _searchController.dispose();
     _listScrollController.dispose();
     _headerAnimController.dispose();
+    _loadingMessage.dispose();
+    _loadingStep.dispose();
     super.dispose();
   }
 
@@ -488,9 +493,47 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
 
     setState(() => _checkingAccountIds.add(acc.id));
 
+    // Tampilkan popup loading agar user tahu proses sedang berjalan
+    final isId = LanguageNotifier.isIndonesian.value;
+    _loadingStep.value = 0;
+    _showValidationLoadingDialog(isId);
+
     try {
+      // ========== TAHAP 1: Cek keaktifan akun ==========
+      if (mounted) _updateLoadingMessage(isId ? 'Memeriksa keaktifan akun...' : 'Checking account validity...');
+      await Future.delayed(const Duration(milliseconds: 650));
+
+      if (!mounted) return;
+
+      // ========== TAHAP 2: Validasi status pembayaran akun ==========
+      // Cek apakah akun aktif dan pembayaran tidak on-hold sebelum generate NFToken.
+      // Ini mencegah user mendapat akun yang payment-nya gagal/on-hold.
+      _loadingStep.value = 1;
+      if (mounted) _updateLoadingMessage(isId ? 'Memeriksa status pembayaran Netflix...' : 'Checking Netflix payment status...');
+      final validationResult = await AccountValidatorService.validateAccount(acc.cookieContent);
+
+      if (!mounted) return;
+
+      // Jika akun TIDAK bisa dipakai (on-hold, canceled, no payment, dll)
+      if (!validationResult.isUsable) {
+        // Tutup loading dialog
+        if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
+        setState(() => _checkingAccountIds.remove(acc.id));
+
+        // Tampilkan modal informasi bahwa akun tidak lolos validasi
+        // User bisa cari akun lain sendiri di daftar akun
+        _showPaymentOnHoldModal(acc, validationResult);
+        return;
+      }
+
+      // ========== TAHAP 3: Generate NFToken (seperti biasa) ==========
+      // Akun lolos validasi payment → lanjut generate NFToken
+      _loadingStep.value = 2;
+      if (mounted) _updateLoadingMessage(isId ? 'Akun aktif & pembayaran valid! Membuat token login...' : 'Account active & payment valid! Generating login token...');
       final result = await NFTokenService.generateNFToken(acc.cookieContent);
       if (mounted) {
+        // Tutup loading dialog
+        if (Navigator.of(context).canPop()) Navigator.of(context).pop();
         setState(() {
           _checkingAccountIds.remove(acc.id);
           _accountTokens[acc.id] = result;
@@ -505,6 +548,8 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
       }
     } catch (e) {
       if (mounted) {
+        // Tutup loading dialog jika masih terbuka
+        if (Navigator.of(context).canPop()) Navigator.of(context).pop();
         setState(() => _checkingAccountIds.remove(acc.id));
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -519,6 +564,400 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
         );
       }
     }
+  }
+
+  /// Menampilkan loading dialog saat validasi akun berjalan.
+  /// Popup ini memberi tahu user tahapan pemeriksaan (keaktifan, pembayaran, token) secara real-time.
+  void _showValidationLoadingDialog(bool isId) {
+    _loadingMessage.value = isId ? 'Memeriksa keaktifan akun...' : 'Checking account validity...';
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 36, vertical: 40),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 350),
+          padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 30),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1D29),
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: const Color(0xFF46D369).withValues(alpha: 0.35), width: 1.2),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF46D369).withValues(alpha: 0.1),
+                blurRadius: 32,
+                spreadRadius: 6,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Animated Netflix-style spinner
+              Container(
+                padding: const EdgeInsets.all(15),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF46D369).withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFF46D369).withValues(alpha: 0.25)),
+                ),
+                child: const SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF46D369)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                isId ? 'Memverifikasi Akun' : 'Verifying Account',
+                style: GoogleFonts.inter(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 10),
+              // Dynamic loading message
+              ValueListenableBuilder<String>(
+                valueListenable: _loadingMessage,
+                builder: (context, message, _) => AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: Text(
+                    message,
+                    key: ValueKey(message),
+                    style: GoogleFonts.inter(
+                      fontSize: 12.5,
+                      color: Colors.white70,
+                      height: 1.4,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              // Step indicators (Keaktifan Akun -> Status Pembayaran -> Token Login)
+              ValueListenableBuilder<int>(
+                valueListenable: _loadingStep,
+                builder: (context, currentStep, _) {
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F1118),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                    ),
+                    child: Column(
+                      children: [
+                        _buildStepItem(
+                          stepIndex: 0,
+                          currentStep: currentStep,
+                          label: isId ? 'Cek keaktifan akun' : 'Check account validity',
+                          defaultIcon: Icons.account_circle_outlined,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildStepItem(
+                          stepIndex: 1,
+                          currentStep: currentStep,
+                          label: isId ? 'Cek status pembayaran' : 'Check payment status',
+                          defaultIcon: Icons.shield_outlined,
+                        ),
+                        const SizedBox(height: 10),
+                        _buildStepItem(
+                          stepIndex: 2,
+                          currentStep: currentStep,
+                          label: isId ? 'Generate token login' : 'Generate login token',
+                          defaultIcon: Icons.vpn_key_outlined,
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Helper untuk baris step dinamis di loading dialog
+  Widget _buildStepItem({
+    required int stepIndex,
+    required int currentStep,
+    required String label,
+    required IconData defaultIcon,
+  }) {
+    final bool isCompleted = currentStep > stepIndex;
+    final bool isInProgress = currentStep == stepIndex;
+
+    Color color;
+    IconData icon;
+
+    if (isCompleted) {
+      color = const Color(0xFF46D369);
+      icon = Icons.check_circle_rounded;
+    } else if (isInProgress) {
+      color = const Color(0xFF46D369);
+      icon = defaultIcon;
+    } else {
+      color = Colors.white38;
+      icon = defaultIcon;
+    }
+
+    return Row(
+      children: [
+        if (isInProgress)
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF46D369)),
+            ),
+          )
+        else
+          Icon(icon, size: 14, color: color),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            style: GoogleFonts.inter(
+              fontSize: 11.5,
+              color: color,
+              fontWeight: isInProgress ? FontWeight.w600 : (isCompleted ? FontWeight.w500 : FontWeight.w400),
+            ),
+          ),
+        ),
+        if (isCompleted)
+          const Icon(Icons.check_rounded, size: 14, color: Color(0xFF46D369)),
+      ],
+    );
+  }
+
+  /// Update pesan loading dialog
+  void _updateLoadingMessage(String message) {
+    _loadingMessage.value = message;
+  }
+
+  /// Menampilkan modal ketika akun tidak lolos validasi pembayaran (on-hold, canceled, dll)
+  void _showPaymentOnHoldModal(CookieAccount acc, AccountValidationResult validation) {
+    final isId = LanguageNotifier.isIndonesian.value;
+
+    // Tentukan icon, warna, dan pesan berdasarkan status
+    IconData statusIcon;
+    Color statusColor;
+    String statusTitle;
+    String statusMessage;
+
+    switch (validation.status) {
+      case PaymentStatus.onHold:
+        statusIcon = Icons.pause_circle_filled_rounded;
+        statusColor = const Color(0xFFFF6B6B);
+        statusTitle = isId ? 'Akun Tidak Lolos ❌' : 'Account Failed ❌';
+        statusMessage = isId
+            ? 'Akun ini tidak lolos karena pembayaran sedang ON HOLD (ditahan). Pembayaran gagal diproses oleh Netflix.\n\nSilakan coba akun lain yang tersedia di daftar akun.'
+            : 'This account failed because the payment is ON HOLD. Payment could not be processed by Netflix.\n\nPlease try another account available in the account list.';
+        break;
+      case PaymentStatus.canceled:
+        statusIcon = Icons.cancel_rounded;
+        statusColor = const Color(0xFFFF6B6B);
+        statusTitle = isId ? 'Akun Tidak Lolos ❌' : 'Account Failed ❌';
+        statusMessage = isId
+            ? 'Akun ini tidak lolos karena keanggotaan telah dibatalkan atau expired.\n\nSilakan coba akun lain yang tersedia di daftar akun.'
+            : 'This account failed because the membership has been canceled or expired.\n\nPlease try another account available in the account list.';
+        break;
+      case PaymentStatus.pending:
+        statusIcon = Icons.hourglass_top_rounded;
+        statusColor = const Color(0xFFFFA726);
+        statusTitle = isId ? 'Akun Tidak Lolos ⏳' : 'Account Failed ⏳';
+        statusMessage = isId
+            ? 'Akun ini tidak lolos karena pembayaran masih tertunda (pending).\n\nSilakan coba akun lain yang tersedia di daftar akun.'
+            : 'This account failed because the payment is still pending.\n\nPlease try another account available in the account list.';
+        break;
+      case PaymentStatus.noPayment:
+      case PaymentStatus.neverMember:
+        statusIcon = Icons.credit_card_off_rounded;
+        statusColor = const Color(0xFFFF6B6B);
+        statusTitle = isId ? 'Akun Tidak Lolos ❌' : 'Account Failed ❌';
+        statusMessage = isId
+            ? 'Akun ini tidak lolos karena belum pernah berlangganan atau tidak memiliki metode pembayaran.\n\nSilakan coba akun lain yang tersedia di daftar akun.'
+            : 'This account failed because it has never been subscribed or has no payment method.\n\nPlease try another account available in the account list.';
+        break;
+      default:
+        statusIcon = Icons.error_outline_rounded;
+        statusColor = const Color(0xFFFF6B6B);
+        statusTitle = isId ? 'Akun Tidak Lolos' : 'Account Failed';
+        statusMessage = isId
+            ? 'Akun ini tidak lolos validasi.\n\nSilakan coba akun lain yang tersedia di daftar akun.'
+            : 'This account failed validation.\n\nPlease try another account available in the account list.';
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 400),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1D29),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: statusColor.withValues(alpha: 0.3), width: 1),
+            boxShadow: [
+              BoxShadow(
+                color: statusColor.withValues(alpha: 0.1),
+                blurRadius: 30,
+                spreadRadius: 5,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Header
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [statusColor.withValues(alpha: 0.15), Colors.transparent],
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                  ),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(20),
+                    topRight: Radius.circular(20),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.15),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+                      ),
+                      child: Icon(statusIcon, color: statusColor, size: 36),
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      statusTitle,
+                      style: GoogleFonts.inter(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: statusColor.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: statusColor.withValues(alpha: 0.3)),
+                      ),
+                      child: Text(
+                        validation.label,
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: statusColor,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Body
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+                child: Column(
+                  children: [
+                    // Status detail box
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0F1118),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                      ),
+                      child: Text(
+                        statusMessage,
+                        style: GoogleFonts.inter(
+                          fontSize: 13,
+                          color: Colors.white.withValues(alpha: 0.8),
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // Info box
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF64B5F6).withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: const Color(0xFF64B5F6).withValues(alpha: 0.2)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.info_outline_rounded, color: Color(0xFF64B5F6), size: 18),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              isId
+                                  ? 'Silakan coba pilih akun lain yang tersedia di daftar akun.'
+                                  : 'Please try selecting another account available in the account list.',
+                              style: GoogleFonts.inter(
+                                fontSize: 12,
+                                color: const Color(0xFF64B5F6),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Close button
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: statusColor.withValues(alpha: 0.15),
+                      foregroundColor: statusColor,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(color: statusColor.withValues(alpha: 0.3)),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: Text(
+                      isId ? 'Mengerti' : 'Understood',
+                      style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   String _normalizePlanName(String raw) {
