@@ -55,10 +55,10 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
 
     final sessionEmail = prefs.getString('session_email');
     if (sessionEmail != null) {
-      final isValid = await SupabaseService.validateSession();
+      final sessionStatus = await SupabaseService.validateSession();
       if (!mounted) return;
       
-      if (isValid) {
+      if (sessionStatus == 'valid' || sessionStatus == 'unavailable') {
         await UserNotifier.init();
         final profile = await SupabaseService.fetchUserProfile();
         final savedUsername = prefs.getString('session_username');
@@ -67,6 +67,18 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
             : ((profile != null && profile['username'] != null && profile['username'].toString().trim().isNotEmpty)
                 ? profile['username'].toString().trim()
                 : sessionEmail.split('@').first);
+                
+        if (sessionStatus == 'unavailable') {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Server tidak dapat dijangkau. Masuk ke mode offline sementara.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+        
         _navigate(MainScreen(username: displayName));
       } else {
         await SupabaseService.logout();
@@ -74,7 +86,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Sesi telah berakhir atau Anda login di perangkat lain.'),
-            backgroundColor: Colors.orange,
+            backgroundColor: Colors.redAccent,
           ),
         );
         _navigate(const LoginScreen());
@@ -124,10 +136,10 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                       decoration: BoxDecoration(
                         color: const Color(0xFF1F1F1F),
                         borderRadius: BorderRadius.circular(24),
-                        border: Border.all(color: const Color(0xFFE50914).withOpacity(0.5), width: 2),
+                        border: Border.all(color: const Color(0xFFE50914).withValues(alpha: 0.5), width: 2),
                         boxShadow: [
                           BoxShadow(
-                            color: const Color(0xFFE50914).withOpacity(0.4),
+                            color: const Color(0xFFE50914).withValues(alpha: 0.4),
                             blurRadius: 30,
                             spreadRadius: 2,
                           ),

@@ -177,7 +177,13 @@ class _LoginScreenState extends State<LoginScreen> with WidgetsBindingObserver {
       _isGoogleLoading = true;
     });
     try {
-      await SupabaseService.signInWithGoogle();
+      final success = await SupabaseService.signInWithGoogle();
+      if (!success && mounted) {
+        setState(() {
+          _isLoading = false;
+          _isGoogleLoading = false;
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {

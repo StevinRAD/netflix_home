@@ -54,16 +54,24 @@ class _GoogleOnboardingScreenState extends State<GoogleOnboardingScreen> {
       _errorMessage = null;
     });
 
-    await SupabaseService.completeGoogleOnboarding(
+    final success = await SupabaseService.completeGoogleOnboarding(
       userId: widget.userId,
       username: username,
     );
 
     if (!mounted) return;
-    setState(() {
-      _isSaving = false;
-      _currentStep = 1; // Move to Tutorial
-    });
+    
+    if (success) {
+      setState(() {
+        _isSaving = false;
+        _currentStep = 1; // Move to Tutorial
+      });
+    } else {
+      setState(() {
+        _isSaving = false;
+        _errorMessage = 'Gagal menyimpan profil (masalah koneksi/server). Silakan coba lagi.';
+      });
+    }
   }
 
   void _finishOnboarding() {

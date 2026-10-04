@@ -38,6 +38,7 @@ class _MainScreenState extends State<MainScreen> {
     return ValueListenableBuilder<bool>(
       valueListenable: LanguageNotifier.isIndonesian,
       builder: (context, isIndo, _) {
+        // ignore: deprecated_member_use
         return ShowCaseWidget(
           builder: (context) => PopScope(
             canPop: _currentIndex == 0,
@@ -48,21 +49,24 @@ class _MainScreenState extends State<MainScreen> {
               }
             },
             child: Scaffold(
-              body: [
-                DashboardScreen(
-                  username: widget.username,
-                  onNavigateToAccounts: () {
-                    setState(() => _currentIndex = 1);
-                  },
-                ),
-                AccountsScreen(
-                  username: widget.username,
-                  onBack: () {
-                    setState(() => _currentIndex = 0);
-                  },
-                ),
-                ProfileScreen(username: widget.username),
-              ][_currentIndex],
+              body: IndexedStack(
+                index: _currentIndex,
+                children: [
+                  DashboardScreen(
+                    username: widget.username,
+                    onNavigateToAccounts: () {
+                      setState(() => _currentIndex = 1);
+                    },
+                  ),
+                  AccountsScreen(
+                    username: widget.username,
+                    onBack: () {
+                      setState(() => _currentIndex = 0);
+                    },
+                  ),
+                  ProfileScreen(username: widget.username),
+                ],
+              ),
               bottomNavigationBar: Container(
                 decoration: BoxDecoration(
                   border: Border(

@@ -189,11 +189,6 @@ class NFTokenService {
         return NFTokenResult.failed('Respon HTTP ${response.statusCode} dari Netflix API.');
       }
     } catch (e) {
-      // Fallback generator for demo/offline testing if direct network call is blocked or offline
-      if (netflixId.length > 10) {
-        final mockToken = 'v1_NFT_${netflixId.hashCode.abs()}_${DateTime.now().millisecondsSinceEpoch}';
-        return NFTokenResult.successful(mockToken, netflixId);
-      }
       return NFTokenResult.failed('Error koneksi: ${e.toString()}');
     }
   }

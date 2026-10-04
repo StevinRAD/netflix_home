@@ -1346,7 +1346,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                       onPressed: () async {
                         Navigator.pop(ctx);
                         await SupabaseService.logout();
-                        if (context.mounted) {
+                        if (mounted) {
                           Navigator.pushAndRemoveUntil(
                             context,
                             MaterialPageRoute(
@@ -1867,7 +1867,7 @@ class _ProfileScreenState extends State<ProfileScreen>
               // Status Chip (Isolated reactive update)
               ValueListenableBuilder<DateTime>(
                 valueListenable: _countdownTicker,
-                builder: (context, _, __) {
+                builder: (context, _, _) {
                   return Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -1897,7 +1897,7 @@ class _ProfileScreenState extends State<ProfileScreen>
           // Progress Bar (Isolated reactive update)
           ValueListenableBuilder<DateTime>(
             valueListenable: _countdownTicker,
-            builder: (context, _, __) {
+            builder: (context, _, _) {
               return ClipRRect(
                 borderRadius: BorderRadius.circular(6),
                 child: LinearProgressIndicator(

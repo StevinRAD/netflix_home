@@ -12,7 +12,7 @@ void main() async {
   try {
     await Supabase.initialize(
       url: SupabaseService.supabaseUrl,
-      anonKey: SupabaseService.supabaseAnonKey,
+      publishableKey: SupabaseService.supabaseAnonKey,
     );
   } catch (e) {
     debugPrint('Supabase initialize error: $e');

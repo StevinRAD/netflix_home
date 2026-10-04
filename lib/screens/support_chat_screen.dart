@@ -91,13 +91,7 @@ class _SupportChatScreenState extends State<SupportChatScreen>
 
   Future<void> _endSession() async {
     if (_userId == null) return;
-    try {
-      // Hapus juga pesan Supabase jika ada
-      await Supabase.instance.client
-          .from('support_chats')
-          .delete()
-          .eq('user_id', _userId!);
-    } catch (_) {}
+    // Removed Supabase delete() to preserve history
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -144,7 +138,7 @@ class _SupportChatScreenState extends State<SupportChatScreen>
   }
 
   Future<void> _sendMessage(String text) async {
-    if (text.trim().isEmpty || _userId == null) return;
+    if (text.trim().isEmpty || _userId == null || _isAiThinking) return;
 
     final message = text.trim();
     _messageController.clear();
@@ -229,6 +223,7 @@ class _SupportChatScreenState extends State<SupportChatScreen>
       _scrollToBottom();
     } catch (e) {
       if (mounted) {
+        _messageController.text = message; // Restore draft
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Gagal mengirim pesan: $e'),

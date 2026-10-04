@@ -5,6 +5,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:math' as math;
 import 'dart:async';
+import 'dart:ui';
 import '../models/account_model.dart';
 import '../services/nftoken_service.dart';
 import '../services/supabase_service.dart';
@@ -479,6 +480,15 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     );
   }
 
+  bool _isValidationDialogOpen = false;
+
+  void _closeValidationDialog() {
+    if (_isValidationDialogOpen && mounted && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+      _isValidationDialogOpen = false;
+    }
+  }
+
   Future<void> _checkAndOpenLinks(CookieAccount acc) async {
     if (_isAccessExpired) {
       _showExpiredSubscriptionModal();
@@ -517,7 +527,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
       // Jika akun TIDAK bisa dipakai (on-hold, canceled, no payment, dll)
       if (!validationResult.isUsable) {
         // Tutup loading dialog
-        if (mounted && Navigator.of(context).canPop()) Navigator.of(context).pop();
+        _closeValidationDialog();
         setState(() => _checkingAccountIds.remove(acc.id));
 
         // Tampilkan modal informasi bahwa akun tidak lolos validasi
@@ -533,7 +543,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
       final result = await NFTokenService.generateNFToken(acc.cookieContent);
       if (mounted) {
         // Tutup loading dialog
-        if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+        _closeValidationDialog();
         setState(() {
           _checkingAccountIds.remove(acc.id);
           _accountTokens[acc.id] = result;
@@ -549,7 +559,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     } catch (e) {
       if (mounted) {
         // Tutup loading dialog jika masih terbuka
-        if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+        _closeValidationDialog();
         setState(() => _checkingAccountIds.remove(acc.id));
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -569,13 +579,19 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
   /// Menampilkan loading dialog saat validasi akun berjalan.
   /// Popup ini memberi tahu user tahapan pemeriksaan (keaktifan, pembayaran, token) secara real-time.
   void _showValidationLoadingDialog(bool isId) {
+    _isValidationDialogOpen = true;
     _loadingMessage.value = isId ? 'Memeriksa keaktifan akun...' : 'Checking account validity...';
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 36, vertical: 40),
+      builder: (ctx) => PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+        },
+        child: Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 36, vertical: 40),
         child: Container(
           constraints: const BoxConstraints(maxWidth: 350),
           padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 30),
@@ -681,7 +697,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
           ),
         ),
       ),
-    );
+    )).then((_) => _isValidationDialogOpen = false);
   }
 
   /// Helper untuk baris step dinamis di loading dialog
@@ -796,13 +812,25 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
             : 'This account failed validation.\n\nPlease try another account available in the account list.';
     }
 
-    showDialog(
+    showGeneralDialog(
       context: context,
       barrierDismissible: true,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
-        child: Container(
+      barrierLabel: 'Dismiss',
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      transitionDuration: const Duration(milliseconds: 350),
+      pageBuilder: (ctx, anim1, anim2) => const SizedBox(),
+      transitionBuilder: (ctx, anim, _, child) {
+        final curve = CurvedAnimation(parent: anim, curve: Curves.easeOutBack);
+        return BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12 * anim.value, sigmaY: 12 * anim.value),
+          child: ScaleTransition(
+            scale: curve,
+            child: FadeTransition(
+              opacity: anim,
+              child: Dialog(
+                backgroundColor: Colors.transparent,
+                insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+                child: Container(
           constraints: const BoxConstraints(maxWidth: 400),
           decoration: BoxDecoration(
             color: const Color(0xFF1A1D29),
@@ -956,164 +984,46 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
             ],
           ),
         ),
-      ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
-  String _normalizePlanName(String raw) {
-    final p = raw.toLowerCase();
-    if (p.contains('premium')) return 'Premium';
-    if (p.contains('standard')) return 'Standard';
-    if (p.contains('basic')) return 'Basic';
-    if (p.contains('mobile')) return 'Mobile';
-    return 'Premium';
-  }
 
   Future<void> _handleAccountErrorAndReplace(CookieAccount failedAccount) async {
-    final targetIndex = _accounts.indexWhere((a) => a.id == failedAccount.id);
-    final normalizedPlan = _normalizePlanName(failedAccount.planName);
-
-    // 1. Instantly remove from local list and state so UI updates in 0ms
-    setState(() {
-      _accounts.removeWhere((a) => a.id == failedAccount.id);
-      _accountTokens.remove(failedAccount.id);
-      _checkingAccountIds.remove(failedAccount.id);
-
-      if (_totalAccountsCount > 0) _totalAccountsCount--;
-      if ((_planTotals[normalizedPlan] ?? 0) > 0) {
-        _planTotals[normalizedPlan] = _planTotals[normalizedPlan]! - 1;
-      }
-      if ((_planTotals['Semua'] ?? 0) > 0) {
-        _planTotals['Semua'] = _planTotals['Semua']! - 1;
-      }
-    });
-
-    // 2. Delete from Supabase Database in background
-    SupabaseService.deleteCookieAccount(failedAccount.id).ignore();
-
-    // 3. Fetch 1 fresh replacement account from DB
-    try {
-      final isAll = _selectedPlan == 'Semua' || _selectedPlan == 'All';
-
-      int offset = 0;
-      if (isAll) {
-        if (normalizedPlan == 'Premium') {
-          _premiumOffset++;
-          offset = _premiumOffset + _semuaCountPerPlan;
-        } else if (normalizedPlan == 'Standard') {
-          _standardOffset++;
-          offset = _standardOffset + _semuaCountPerPlan;
-        } else if (normalizedPlan == 'Basic') {
-          _basicOffset++;
-          offset = _basicOffset + _semuaCountPerPlan;
-        } else {
-          _mobileOffset++;
-          offset = _mobileOffset + _semuaCountPerPlan;
-        }
-      } else {
-        _currentPlanOffset++;
-        offset = _currentPlanOffset + _accounts.length;
-      }
-
-      final totalForPlan = _planTotals[normalizedPlan] ?? 50;
-      offset = offset % math.max(1, totalForPlan);
-
-      final activeRegion = _selectedRegion == 'Semua' ? null : _selectedRegion;
-
-      // Fetch up to 3 candidates to avoid picking any account already on screen
-      final result = await SupabaseService.fetchAccountsByPlan(
-        normalizedPlan,
-        limit: 3,
-        offset: offset,
-        searchQuery: _searchQuery,
-        regionFilter: activeRegion,
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: const Color(0xFFE50914),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          margin: const EdgeInsets.all(16),
+          content: Row(
+            children: [
+              const Icon(Icons.error_outline, color: Colors.white, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  LanguageNotifier.isIndonesian.value
+                      ? 'Koneksi atau server sedang bermasalah. Silakan coba lagi.'
+                      : 'Connection or server issue. Please try again.',
+                  style: GoogleFonts.inter(fontSize: 12, color: Colors.white, height: 1.3),
+                ),
+              ),
+            ],
+          ),
+          action: SnackBarAction(
+            label: LanguageNotifier.isIndonesian.value ? 'Tutup' : 'Close',
+            textColor: Colors.white,
+            onPressed: () {},
+          ),
+          duration: const Duration(seconds: 4),
+        ),
       );
-
-      CookieAccount? replacement;
-      final existingIds = _accounts.map((a) => a.id).toSet();
-      existingIds.add(failedAccount.id);
-
-      for (final candidate in result.accounts) {
-        if (!existingIds.contains(candidate.id)) {
-          replacement = candidate;
-          break;
-        }
-      }
-
-      // Fallback: If not found for specific plan, fetch from all accounts
-      if (replacement == null && isAll) {
-        final fallbackResult = await SupabaseService.fetchCookieAccountsPaged(
-          limit: 3,
-          offset: offset,
-          searchQuery: _searchQuery,
-          regionFilter: activeRegion,
-        );
-        for (final candidate in fallbackResult.accounts) {
-          if (!existingIds.contains(candidate.id)) {
-            replacement = candidate;
-            break;
-          }
-        }
-      }
-
-      if (replacement != null && mounted) {
-        setState(() {
-          if (targetIndex >= 0 && targetIndex <= _accounts.length) {
-            _accounts.insert(targetIndex, replacement!);
-          } else {
-            _accounts.add(replacement!);
-          }
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: const Color(0xFF1E293B),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            margin: const EdgeInsets.all(16),
-            content: Row(
-              children: [
-                const Icon(Icons.auto_mode_rounded, color: Color(0xFF46D369), size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    LanguageNotifier.isIndonesian.value
-                        ? 'Akun otomatis diperbarui! Kami telah menyiapkan 1 akun ${replacement.planName} baru yang segar untuk Anda. Silakan gunakan akun ini ✓'
-                        : 'Account automatically refreshed! We prepared a fresh 1 ${replacement.planName} account for you ✓',
-                    style: GoogleFonts.inter(fontSize: 12, color: Colors.white, height: 1.3),
-                  ),
-                ),
-              ],
-            ),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: const Color(0xFF1E293B),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            margin: const EdgeInsets.all(16),
-            content: Row(
-              children: [
-                const Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    LanguageNotifier.isIndonesian.value
-                        ? 'Akun telah otomatis diperbarui! Silakan pilih akun lain di daftar.'
-                        : 'Account automatically refreshed! Please choose another account from the list.',
-                    style: GoogleFonts.inter(fontSize: 12, color: Colors.white),
-                  ),
-                ),
-              ],
-            ),
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
-    } catch (_) {}
+    }
   }
 
 
@@ -2064,9 +1974,8 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     required VoidCallback onTap,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Expanded(
-      child: Material(
-        color: Colors.transparent,
+    return Material(
+      color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
           borderRadius: BorderRadius.circular(10),
@@ -2098,7 +2007,6 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
             ),
           ),
         ),
-      ),
     );
   }
 

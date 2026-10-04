@@ -67,19 +67,25 @@ class SupabaseService {
     await client.auth.signOut();
   }
 
+  static Future<void>? _googleSignInInit;
+
+  static Future<void> _ensureGoogleSignInInitialized() {
+    const webClientId = '123668620740-p8piii7m4q7nmok4jeupi5oahbd2uv8p.apps.googleusercontent.com';
+    _googleSignInInit ??= g_sign_in.GoogleSignIn.instance.initialize(
+      clientId: kIsWeb ? webClientId : null,
+      serverClientId: webClientId,
+    );
+    return _googleSignInInit!;
+  }
+
   /// Sign in with Google via Native Google Sign In
   static Future<bool> signInWithGoogle() async {
     try {
-      const webClientId = '123668620740-p8piii7m4q7nmok4jeupi5oahbd2uv8p.apps.googleusercontent.com';
-
-      await g_sign_in.GoogleSignIn.instance.initialize(
-        clientId: kIsWeb ? webClientId : null,
-        serverClientId: webClientId,
-      );
+      await _ensureGoogleSignInInitialized();
       
       final googleUser = await g_sign_in.GoogleSignIn.instance.authenticate();
       
-      final googleAuth = await googleUser.authentication;
+      final googleAuth = googleUser.authentication;
       final idToken = googleAuth.idToken;
 
       if (idToken == null) {
@@ -179,9 +185,6 @@ class SupabaseService {
     final avatarUrl = prefs.getString('session_avatar_url');
 
     final cleanUsername = username.trim().isNotEmpty ? username.trim() : 'Pengguna';
-    await prefs.setString('session_username', cleanUsername);
-    await prefs.setBool('onboarding_done_$userId', true);
-    UserNotifier.username.value = cleanUsername;
 
     try {
       final res = await http.post(
@@ -196,10 +199,16 @@ class SupabaseService {
           'id': userId,
           'username': cleanUsername,
           'device_id': deviceId,
-          if (avatarUrl != null) 'avatar_url': avatarUrl,
+          ?'avatar_url': avatarUrl,
         }),
       );
-      return res.statusCode == 200 || res.statusCode == 201;
+      if (res.statusCode == 200 || res.statusCode == 201) {
+        await prefs.setString('session_username', cleanUsername);
+        await prefs.setBool('onboarding_done_$userId', true);
+        UserNotifier.username.value = cleanUsername;
+        return true;
+      }
+      return false;
     } catch (e) {
       debugPrint('Error completing Google onboarding: $e');
       return false;
@@ -209,20 +218,13 @@ class SupabaseService {
   /// Authenticate user via Supabase Auth
   static Future<bool> login(String usernameOrEmail, String password) async {
     try {
-      final response = await http.post(
-        Uri.parse('$supabaseUrl/auth/v1/token?grant_type=password'),
-        headers: {
-          'apikey': supabaseAnonKey,
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'email': usernameOrEmail,
-          'password': password,
-        }),
+      final response = await Supabase.instance.client.auth.signInWithPassword(
+        email: usernameOrEmail,
+        password: password,
       );
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final userId = data['user']['id'];
+      
+      if (response.session != null && response.user != null) {
+        final userId = response.user!.id;
         
         final prefs = await SharedPreferences.getInstance();
         final deviceId = DateTime.now().millisecondsSinceEpoch.toString();
@@ -272,13 +274,13 @@ class SupabaseService {
   }
 
   /// Validate single-device session
-  static Future<bool> validateSession() async {
+  static Future<String> validateSession() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final userId = prefs.getString('session_user_id');
       final localDeviceId = prefs.getString('session_device_id');
       
-      if (userId == null || localDeviceId == null) return false;
+      if (userId == null || localDeviceId == null) return 'revoked';
       
       final response = await http.get(
         Uri.parse('$supabaseUrl/rest/v1/profiles?id=eq.$userId&select=device_id'),
@@ -286,20 +288,21 @@ class SupabaseService {
           'apikey': supabaseAnonKey,
           'Authorization': 'Bearer $supabaseAnonKey',
         },
-      );
+      ).timeout(const Duration(seconds: 10));
       
       if (response.statusCode == 200) {
         final List<dynamic> data = jsonDecode(response.body);
         if (data.isNotEmpty) {
           final remoteDeviceId = data[0]['device_id'];
-          return remoteDeviceId == localDeviceId;
+          return remoteDeviceId == localDeviceId ? 'valid' : 'revoked';
         }
+        return 'revoked';
       }
-      return false;
+      return 'unavailable';
     } catch (e) {
-      // If network fails, we might want to allow offline access or deny it.
-      // Deny for strict single-device policy.
-      return false;
+      // If network fails, return unavailable to allow offline caching 
+      // instead of forcefully logging out the user.
+      return 'unavailable';
     }
   }
 

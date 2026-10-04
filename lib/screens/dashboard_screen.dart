@@ -384,71 +384,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     setState(() => _isLoading = true);
 
     try {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                const SizedBox(
-                  width: 16, height: 16,
-                  child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                ),
-                const SizedBox(width: 12),
-                Text(LanguageNotifier.isIndonesian.value
-                    ? 'Memperbarui daftar akun...'
-                    : 'Updating account list...'),
-              ],
-            ),
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            backgroundColor: const Color(0xFF333333),
-          ),
-        );
-      }
-
-      final int successCount = await SupabaseService.syncTxtFilesFromStorage();
       await SupabaseService.fetchUserProfile();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        if (successCount > 0) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.check_circle, color: Colors.white, size: 18),
-                  const SizedBox(width: 10),
-                  Text(LanguageNotifier.isIndonesian.value
-                      ? 'Berhasil! $successCount data baru ditambahkan.'
-                      : 'Success! $successCount new data added.'),
-                ],
-              ),
-              backgroundColor: const Color(0xFF46D369),
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.info_outline, color: Colors.white, size: 18),
-                  const SizedBox(width: 10),
-                  Flexible(
-                    child: Text(LanguageNotifier.isIndonesian.value
-                        ? 'Daftar akun sudah versi terbaru.'
-                        : 'Account list is already up to date.'),
-                  ),
-                ],
-              ),
-              backgroundColor: Colors.blueAccent,
-              behavior: SnackBarBehavior.floating,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-          );
-        }
-      }
       await _loadAccounts();
     } catch (e) {
       if (mounted) {
@@ -457,21 +393,21 @@ class _DashboardScreenState extends State<DashboardScreen>
           SnackBar(
             content: Row(
               children: [
-                const Icon(Icons.info_outline, color: Colors.white, size: 18),
+                const Icon(Icons.error_outline, color: Colors.white, size: 18),
                 const SizedBox(width: 10),
                 Flexible(
                   child: Text(LanguageNotifier.isIndonesian.value
-                      ? 'Daftar akun sudah versi terbaru.'
-                      : 'Account list is already up to date.'),
+                      ? 'Gagal memperbarui. Menampilkan data terakhir.'
+                      : 'Refresh failed. Showing latest available data.'),
                 ),
               ],
             ),
-            backgroundColor: Colors.blueAccent,
+            backgroundColor: const Color(0xFFE50914),
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
           ),
         );
-        await _loadAccounts();
+        setState(() => _isLoading = false);
       }
     }
   }
