@@ -199,8 +199,7 @@ class SupabaseService {
           'id': userId,
           'username': cleanUsername,
           'device_id': deviceId,
-          // ignore: use_null_aware_elements
-          if (avatarUrl != null) 'avatar_url': avatarUrl,
+          ?'avatar_url': avatarUrl,
         }),
       );
       if (res.statusCode == 200 || res.statusCode == 201) {

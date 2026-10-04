@@ -1,6 +1,4 @@
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'supabase_service.dart';
@@ -8,22 +6,16 @@ import 'supabase_service.dart';
 /// AI Chat Service menggunakan OpenAI-compatible API
 /// Menyediakan auto-reply cerdas untuk Live CS
 class AiChatService {
-  static const String _baseUrl = 'https://rhbu4sq.abc-tunnel.us/v1';
-  static const String _apiKey = 'sk-f55743f4fee24bdd-g51ksf-51f2beef';
-  static const String _model = 'netflixhome';
+  // AI configuration should be loaded from backend or environment, never hardcoded.
+  // We use Supabase Edge Functions for secure AI calls.
 
   /// Cek apakah AI server aktif/online
   static Future<bool> isAvailable() async {
     try {
-      final response = await http
-          .get(
-            Uri.parse('$_baseUrl/models'),
-            headers: {
-              'Authorization': 'Bearer $_apiKey',
-            },
-          )
-          .timeout(const Duration(seconds: 5));
-      return response.statusCode == 200;
+      final client = Supabase.instance.client;
+      // Calling a lightweight health-check endpoint on the Edge Function
+      final response = await client.functions.invoke('ai_chat_health').timeout(const Duration(seconds: 5));
+      return response.status == 200;
     } catch (e) {
       debugPrint('AI service unavailable: $e');
       return false;
@@ -225,30 +217,21 @@ ATURAN PENTING & PEMBATASAN TOPIK (STRIKTIF):
       // Tambahkan pesan user saat ini
       messages.add({'role': 'user', 'content': userMessage});
 
-      final response = await http
-          .post(
-            Uri.parse('$_baseUrl/chat/completions'),
-            headers: {
-              'Authorization': 'Bearer $_apiKey',
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode({
-              'model': _model,
-              'messages': messages,
-              'max_tokens': 800,
-              'temperature': 0.2,
-              'stream': false,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
+      final client = Supabase.instance.client;
+      final response = await client.functions.invoke(
+        'ai_chat',
+        body: {
+          'messages': messages,
+        },
+      ).timeout(const Duration(seconds: 30));
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+      if (response.status == 200) {
+        final data = response.data;
         final content =
             data['choices']?[0]?['message']?['content']?.toString();
         return content?.trim();
       } else {
-        debugPrint('AI API error: ${response.statusCode} - ${response.body}');
+        debugPrint('AI API error: ${response.status} - ${response.data}');
         return null;
       }
     } catch (e) {
