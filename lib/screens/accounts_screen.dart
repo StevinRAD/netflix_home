@@ -501,27 +501,39 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     try {
       // ========== TAHAP 1: Cek keaktifan akun ==========
       if (mounted) _updateLoadingMessage(isId ? 'Memeriksa keaktifan akun...' : 'Checking account validity...');
-      await Future.delayed(const Duration(milliseconds: 650));
-
-      if (!mounted) return;
-
-      // ========== TAHAP 2: Validasi status pembayaran akun ==========
-      // Cek apakah akun aktif dan pembayaran tidak on-hold sebelum generate NFToken.
-      // Ini mencegah user mendapat akun yang payment-nya gagal/on-hold.
-      _loadingStep.value = 1;
-      if (mounted) _updateLoadingMessage(isId ? 'Memeriksa status pembayaran Netflix...' : 'Checking Netflix payment status...');
       final validationResult = await AccountValidatorService.validateAccount(acc.cookieContent);
 
       if (!mounted) return;
 
-      // Jika akun TIDAK bisa dipakai (on-hold, canceled, no payment, dll)
-      if (!validationResult.isUsable) {
-        // Tutup loading dialog
+      if (validationResult.status == PaymentStatus.canceled) {
+        // Gagal di Tahap 1: Akun Mati/Expired
         _closeValidationDialog();
         setState(() => _checkingAccountIds.remove(acc.id));
 
-        // Tampilkan modal informasi bahwa akun tidak lolos validasi
-        // User bisa cari akun lain sendiri di daftar akun
+        // Hapus akun karena sudah expired
+        await SupabaseService.deleteCookieAccount(acc.id);
+        _loadAccounts(); // Refresh daftar akun
+
+        _showPaymentOnHoldModal(acc, validationResult);
+        return;
+      }
+
+      // ========== TAHAP 2: Validasi status pembayaran akun ==========
+      _loadingStep.value = 1;
+      if (mounted) _updateLoadingMessage(isId ? 'Memeriksa status pembayaran Netflix...' : 'Checking Netflix payment status...');
+      
+      // Delay untuk efek UI agar transisi step terlihat natural
+      await Future.delayed(const Duration(milliseconds: 800));
+
+      if (!validationResult.isUsable) {
+        // Gagal di Tahap 2: Pembayaran On Hold / Pending / dsb
+        _closeValidationDialog();
+        setState(() => _checkingAccountIds.remove(acc.id));
+
+        // Hapus akun yang tidak bisa digunakan
+        await SupabaseService.deleteCookieAccount(acc.id);
+        _loadAccounts(); // Refresh daftar akun
+
         _showPaymentOnHoldModal(acc, validationResult);
         return;
       }
@@ -984,7 +996,11 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
 
 
   Future<void> _handleAccountErrorAndReplace(CookieAccount failedAccount) async {
+    // Hapus akun dari database
+    await SupabaseService.deleteCookieAccount(failedAccount.id);
     if (mounted) {
+      _loadAccounts(); // Refresh daftar akun di UI
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: const Color(0xFFE50914),
