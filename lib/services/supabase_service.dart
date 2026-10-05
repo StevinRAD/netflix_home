@@ -199,7 +199,7 @@ class SupabaseService {
           'id': userId,
           'username': cleanUsername,
           'device_id': deviceId,
-          ?'avatar_url': avatarUrl,
+          if (avatarUrl != null) 'avatar_url': avatarUrl,
         }),
       );
       if (res.statusCode == 200 || res.statusCode == 201) {
