@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../services/supabase_service.dart';
 import '../utils/language_notifier.dart';
 import '../utils/user_notifier.dart';
+import '../utils/contact_helper.dart';
 import 'google_onboarding_screen.dart';
 import 'login_help_modal.dart';
 import 'main_screen.dart';
@@ -861,10 +862,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
   Future<void> _contactAdminWhatsApp() async {
     final email = _emailController.text.trim();
     final message = 'Halo Admin, saya mengalami kendala lupa kata sandi akun Netflix Tools (Email: ${email.isNotEmpty ? email : "-"}). Mohon bantuannya.';
-    final url = Uri.parse('https://wa.me/6282268426070?text=${Uri.encodeComponent(message)}');
-    try {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
-    } catch (_) {}
+    await ContactHelper.showContactOptions(context, defaultText: message);
   }
 
   @override

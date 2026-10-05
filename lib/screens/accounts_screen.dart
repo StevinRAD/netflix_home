@@ -11,6 +11,7 @@ import '../services/nftoken_service.dart';
 import '../services/supabase_service.dart';
 import '../services/account_validator_service.dart';
 import '../utils/language_notifier.dart';
+import '../utils/contact_helper.dart';
 import 'login_help_modal.dart';
 import '../widgets/video_tutorial_modal.dart';
 
@@ -375,21 +376,10 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
     });
     _loadAccounts();
   }
-
   Future<void> _contactAdminWhatsApp({String? customMessage}) async {
     final text = customMessage ??
         'Halo Admin Netflix Home, saya (${widget.username}) butuh bantuan perpanjangan paket / informasi akun.';
-    final waUrl = Uri.parse('https://wa.me/6282268426070?text=${Uri.encodeComponent(text)}');
-    final waAppUrl = Uri.parse('whatsapp://send?phone=6282268426070&text=${Uri.encodeComponent(text)}');
-    try {
-      if (await canLaunchUrl(waAppUrl)) {
-        await launchUrl(waAppUrl, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-      }
-    } catch (_) {
-      await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-    }
+    await ContactHelper.showContactOptions(context, defaultText: text);
   }
 
   void _showExpiredSubscriptionModal() {
@@ -453,7 +443,7 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
                   },
                   icon: const Icon(Icons.chat_rounded, size: 18),
                   label: Text(
-                    LanguageNotifier.isIndonesian.value ? 'Beli / Perpanjang via WhatsApp' : 'Buy / Extend via WhatsApp',
+                    LanguageNotifier.isIndonesian.value ? 'Beli / Perpanjang' : 'Buy / Extend',
                     style: GoogleFonts.inter(fontWeight: FontWeight.w600),
                   ),
                   style: ElevatedButton.styleFrom(
@@ -1008,8 +998,8 @@ class _AccountsScreenState extends State<AccountsScreen> with TickerProviderStat
               Expanded(
                 child: Text(
                   LanguageNotifier.isIndonesian.value
-                      ? 'Koneksi atau server sedang bermasalah. Silakan coba lagi.'
-                      : 'Connection or server issue. Please try again.',
+                      ? 'Gagal memverifikasi akun (Mungkin expired/tidak aktif). Silakan coba akun lain.'
+                      : 'Failed to verify account (Might be expired/inactive). Please try another account.',
                   style: GoogleFonts.inter(fontSize: 12, color: Colors.white, height: 1.3),
                 ),
               ),

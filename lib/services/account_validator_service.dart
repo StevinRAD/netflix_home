@@ -159,6 +159,15 @@ class AccountValidatorService {
 
       final browseHtml = browseResp.body;
 
+      // Cek apakah cookie sudah mati (ter-redirect ke login/clearcookies)
+      final currentPath = browseResp.request?.url.path.toLowerCase() ?? '';
+      if (currentPath.contains('/login') || 
+          currentPath.contains('/clearcookies') || 
+          browseHtml.contains('name="authURL"') || 
+          browseHtml.contains('page-login')) {
+        return AccountValidationResult.canceled(data: {'reason': 'cookie_expired'});
+      }
+
       // Extract build_id dari response
       final buildId = _extractBuildId(browseHtml);
 

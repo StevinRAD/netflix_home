@@ -14,6 +14,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:image_picker/image_picker.dart';
 import '../utils/user_notifier.dart';
+import '../utils/contact_helper.dart';
 import '../widgets/user_avatar.dart';
 import 'help_center_screen.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -169,19 +170,7 @@ class _ProfileScreenState extends State<ProfileScreen>
   Future<void> _contactAdminWhatsApp({String? customMessage}) async {
     final text = customMessage ??
         'Halo Admin Netflix Home, saya (${widget.username}) butuh bantuan perpanjangan paket / informasi akun.';
-    final waUrl = Uri.parse(
-        'https://wa.me/6282268426070?text=${Uri.encodeComponent(text)}');
-    final waAppUrl = Uri.parse(
-        'whatsapp://send?phone=6282268426070&text=${Uri.encodeComponent(text)}');
-    try {
-      if (await canLaunchUrl(waAppUrl)) {
-        await launchUrl(waAppUrl, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-      }
-    } catch (_) {
-      await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-    }
+    await ContactHelper.showContactOptions(context, defaultText: text);
   }
 
   void _navigateToHelpCenter() {

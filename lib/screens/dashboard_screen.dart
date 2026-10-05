@@ -10,6 +10,7 @@ import '../services/supabase_service.dart';
 import '../services/update_service.dart';
 import '../utils/language_notifier.dart';
 import '../utils/user_notifier.dart';
+import '../utils/contact_helper.dart';
 import '../widgets/user_avatar.dart';
 import 'dashboard_guide_screen.dart';
 import 'help_center_screen.dart';
@@ -415,19 +416,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   Future<void> _contactAdminWhatsApp() async {
     final text =
         'Halo Admin Netflix Home, saya (${widget.username}) butuh bantuan perpanjangan paket / pembelian langganan.';
-    final waUrl = Uri.parse(
-        'https://wa.me/6282268426070?text=${Uri.encodeComponent(text)}');
-    final waAppUrl = Uri.parse(
-        'whatsapp://send?phone=6282268426070&text=${Uri.encodeComponent(text)}');
-    try {
-      if (await canLaunchUrl(waAppUrl)) {
-        await launchUrl(waAppUrl, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-      }
-    } catch (_) {
-      await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-    }
+    await ContactHelper.showContactOptions(context, defaultText: text);
   }
 
   void _navigateToHelpCenter() {

@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../utils/language_notifier.dart';
 import '../utils/user_notifier.dart';
+import '../utils/contact_helper.dart';
 import '../widgets/video_tutorial_modal.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -501,20 +502,7 @@ class _LoginHelpModalState extends State<LoginHelpModal>
         : 'Pengguna';
     final text =
         'Halo CS Netflix Home, saya ($username). Saya butuh panduan lebih lanjut cara login Netflix di perangkat saya. Mohon bantuannya.';
-    final waUrl = Uri.parse(
-        'whatsapp://send?phone=6282268426070&text=${Uri.encodeComponent(text)}');
-    final waWebUrl = Uri.parse(
-        'https://wa.me/6282268426070?text=${Uri.encodeComponent(text)}');
-
-    try {
-      if (await canLaunchUrl(waUrl)) {
-        await launchUrl(waUrl, mode: LaunchMode.externalApplication);
-      } else {
-        await launchUrl(waWebUrl, mode: LaunchMode.externalApplication);
-      }
-    } catch (_) {
-      await launchUrl(waWebUrl, mode: LaunchMode.externalApplication);
-    }
+    await ContactHelper.showContactOptions(context, defaultText: text);
   }
 
   @override
